@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lift">
+<meta name="theme-color" content="#0e0f13">
+<title>Lift</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<style>
+  :root { --bg:#0e0f13; --card:#181a21; --card2:#202330; --line:#262a35; --fg:#f2f3f7; --dim:#8b90a0;
+          --acc:#7c9cff; --good:#57d99a; --bad:#ff6b6b; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html { background:var(--bg); }
+  body { background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         min-height:100vh; padding:max(10px,env(safe-area-inset-top)) 14px calc(90px + env(safe-area-inset-bottom)); }
+  button { font:inherit; color:inherit; cursor:pointer; touch-action:manipulation; }
+  input { font:inherit; color:var(--fg); }
+  #app { max-width:560px; margin:0 auto; }
+  .top { display:flex; align-items:center; gap:8px; min-height:44px; margin-bottom:10px; }
+  .top h1 { font-size:15px; color:var(--dim); font-weight:700; letter-spacing:.12em; text-transform:uppercase; flex:1;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .top h1.big { color:var(--fg); font-size:22px; letter-spacing:0; text-transform:none; font-weight:800; }
+  .iconbtn { background:none; border:none; color:var(--dim); font-size:22px; width:40px; height:40px; border-radius:12px; }
+  .back { background:none; border:none; color:var(--acc); font-size:17px; font-weight:600; padding:8px 4px; }
+  #sync { font-size:12px; color:var(--dim); display:flex; align-items:center; gap:5px; background:none; border:none; padding:6px 2px; }
+  #sync i { width:8px; height:8px; border-radius:50%; background:var(--dim); display:inline-block; }
+  #sync.ok i { background:var(--good); } #sync.busy i { background:var(--acc); } #sync.err i { background:var(--bad); }
+  #sync.off i { background:#555; }
+  .seg { display:flex; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:3px; gap:3px; margin-bottom:12px; }
+  .seg button { flex:1; background:none; border:none; border-radius:999px; padding:9px 0; font-weight:700; color:var(--dim); font-size:15px; }
+  .seg button.on { background:var(--acc); color:#0b1020; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tabs button { background:var(--card); color:var(--dim); border:1px solid var(--line); border-radius:999px; padding:7px 16px; font-size:14px; font-weight:700; }
+  .tabs button.on { background:#2b2f3d; color:var(--fg); border-color:var(--acc); }
+  .card { background:var(--card); border-radius:18px; padding:14px; margin-bottom:10px; }
+  .rcard { display:block; width:100%; text-align:left; border:none; }
+  .rcard .nm { font-size:20px; font-weight:800; }
+  .sub { color:var(--dim); font-size:13px; margin-top:3px; }
+  .banner { background:#1d2540; border:1px solid var(--acc); border-radius:14px; padding:12px 14px; margin-bottom:12px;
+            display:flex; align-items:center; gap:10px; font-size:15px; }
+  .banner b { flex:1; }
+  .warn { background:#2a2116; border-color:#d9a057; color:#f3d9b0; font-size:13px; }
+  .btn { background:#232734; border:none; border-radius:14px; padding:12px 16px; font-weight:700; font-size:15px; }
+  .btn.pri { background:var(--acc); color:#0b1020; }
+  .btn.good { background:var(--good); color:#08150f; }
+  .btn.danger { background:#3a1f24; color:var(--bad); }
+  .btn.ghost { background:none; border:1px dashed #3a3f4f; color:var(--dim); }
+  .btn.sm { padding:7px 12px; font-size:13px; border-radius:10px; }
+  .btn.wide { width:100%; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > .grow { flex:1; }
+  .stack > * + * { margin-top:8px; }
+  .exname { font-size:18px; font-weight:800; display:flex; align-items:baseline; gap:8px; }
+  .exname button { background:none; border:none; text-align:left; font-weight:800; font-size:18px; padding:0; }
+  .last { color:var(--dim); font-size:13px; margin:3px 0 8px; font-variant-numeric:tabular-nums; }
+  .last b { color:#b9bfd0; font-weight:600; }
+  .hdr { display:grid; grid-template-columns:24px 78px 1fr 22px; gap:8px; color:var(--dim); font-size:11px;
+         text-transform:uppercase; letter-spacing:.08em; padding:0 0 4px; }
+  .set { display:grid; grid-template-columns:24px 78px 1fr 22px; gap:8px; align-items:center; margin-bottom:6px; }
+  .sn { color:var(--dim); font-weight:700; text-align:center; font-variant-numeric:tabular-nums; }
+  .num { width:100%; background:var(--card2); border:1px solid var(--line); border-radius:10px; padding:10px 6px;
+         font-size:18px; text-align:center; font-variant-numeric:tabular-nums; -webkit-appearance:none; appearance:none; }
+  .num:focus { outline:none; border-color:var(--acc); }
+  .num::placeholder { color:#5c6273; }
+  .parts { display:grid; grid-template-columns:repeat(var(--n),1fr); gap:5px; }
+  .parts label { display:block; text-align:center; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  .parts .num { padding:9px 2px; font-size:17px; margin-top:2px; }
+  .mk { font-size:15px; text-align:center; font-weight:800; }
+  .mk.up { color:var(--good); } .mk.down { color:var(--bad); } .mk.same { color:var(--dim); }
+  .setbtns { display:flex; gap:8px; margin-top:4px; }
+  .txt { width:100%; background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:16px; }
+  .txt:focus { outline:none; border-color:var(--acc); }
+  label.f { display:block; color:var(--dim); font-size:12px; margin:10px 0 4px; text-transform:uppercase; letter-spacing:.08em; }
+  .edrow { background:var(--card2); border-radius:14px; padding:10px; margin-bottom:8px; }
+  .edrow .row + .row { margin-top:8px; }
+  .edrow .mini { width:58px; text-align:center; }
+  .edrow .tiny { background:#2b2f3d; border:none; border-radius:10px; width:36px; height:40px; font-size:16px; color:var(--dim); }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(14,15,19,.94); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+         border-top:1px solid var(--line); padding:10px 14px calc(10px + env(safe-area-inset-bottom)); }
+  .bar .in { max-width:560px; margin:0 auto; display:flex; gap:8px; }
+  .bar .in .btn { flex:1; }
+  .hist .d { font-weight:800; font-size:16px; }
+  .hist .l { font-size:14px; color:#c5cad8; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .hist .l span { color:var(--dim); }
+  .empty { color:var(--dim); text-align:center; padding:28px 10px; font-size:15px; }
+  .toast { position:fixed; left:50%; bottom:calc(96px + env(safe-area-inset-bottom)); transform:translateX(-50%); background:#2b2f3d;
+           color:var(--fg); padding:10px 16px; border-radius:12px; font-size:14px; font-weight:600; z-index:9; box-shadow:0 6px 24px #0008;
+           max-width:90vw; text-align:center; }
+  .note { color:var(--dim); font-size:13px; line-height:1.5; }
+  .note code { color:#c5cad8; }
+  .pill { font-size:11px; color:var(--acc); border:1px solid #34406a; border-radius:999px; padding:1px 7px; font-weight:700; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="core.js"></script>
+<script>
+"use strict";
+const C = LiftCore;
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
+
+/* ---------------- state ---------------- */
+let cfg = LS.get("lift.cfg", { repo: "gknafo/lift-data", token: "" });
+let profile = LS.get("lift.profile", "gav");
+if (!C.PROFILES.some((p) => p.key === profile)) profile = "gav";
+const docs = {};
+const status = {};
+let view = { name: "home", tab: "routines" };
+let ed = null;       // routine being edited
+let editSess = null; // past session being edited
+
+function doc(k = profile) {
+  if (!docs[k]) {
+    const cached = LS.get("lift.doc." + k, null);
+    docs[k] = C.validDoc(cached) ? cached : C.seedDoc(k);
+  }
+  return docs[k];
+}
+function saveLocal(k) { LS.set("lift.doc." + k, docs[k]); }
+function mutate(fn, k = profile) {
+  const d = doc(k); fn(d); saveLocal(k);
+  LS.set("lift.dirty." + k, true); scheduleSync(k);
+}
+function getDraft(k = profile) { return LS.get("lift.draft." + k, null); }
+function putDraft(d, k = profile) { if (d) LS.set("lift.draft." + k, d); else LS.del("lift.draft." + k); }
+const pname = (k) => (C.PROFILES.find((p) => p.key === k) || {}).name || k;
+
+/* ---------------- GitHub sync ---------------- */
+function gh(path, opts = {}) {
+  return fetch("https://api.github.com/repos/" + cfg.repo + path, {
+    cache: "no-store", ...opts,
+    headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json", ...(opts.headers || {}) },
+  });
+}
+async function ghGet(k) {
+  const res = await gh("/contents/" + k + ".json");
+  if (res.status === 404) return { doc: null, sha: null };
+  if (!res.ok) throw Object.assign(new Error("GET " + res.status), { status: res.status });
+  const j = await res.json();
+  let text;
+  if (j.encoding === "base64" && j.content) text = C.b64decode(j.content);
+  else if (!j.size) text = "";
+  else { // files over 1 MB come back without content; fetch raw instead
+    const r2 = await gh("/contents/" + k + ".json", { headers: { Accept: "application/vnd.github.raw+json" } });
+    if (!r2.ok) throw Object.assign(new Error("GET raw " + r2.status), { status: r2.status });
+    text = await r2.text();
+  }
+  let d = null;
+  if (text.trim()) { d = JSON.parse(text); if (!C.validDoc(d)) throw new Error("Bad data file " + k + ".json"); }
+  return { doc: d, sha: j.sha };
+}
+async function ghPut(k, d, sha) {
+  const body = { message: pname(k) + " · " + new Date().toISOString(), content: C.b64encode(JSON.stringify(d)) };
+  if (sha) body.sha = sha;
+  const res = await gh("/contents/" + k + ".json", { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+  if (!res.ok) throw Object.assign(new Error("PUT " + res.status), { status: res.status });
+  return (await res.json()).content.sha;
+}
+const syncing = {}, again = {}, timers = {};
+function scheduleSync(k) {
+  clearTimeout(timers[k]);
+  if (cfg.token) setStatus(k, "busy");
+  timers[k] = setTimeout(() => sync(k), 700);
+}
+async function sync(k) {
+  if (!cfg.token || !cfg.repo) { setStatus(k, "off"); return; }
+  if (syncing[k]) { again[k] = true; return; }
+  syncing[k] = true; setStatus(k, "busy");
+  try {
+    let done = false;
+    for (let attempt = 0; attempt < 4 && !done; attempt++) {
+      const r = await ghGet(k);
+      const merged = C.mergeDocs(doc(k), r.doc);
+      docs[k] = merged; saveLocal(k);
+      if (r.doc && C.sameDoc(merged, r.doc)) { done = true; break; }
+      try { await ghPut(k, merged, r.sha); done = true; }
+      catch (e) { if (e.status !== 409 && e.status !== 422) throw e; }
+    }
+    if (!done) throw new Error("conflict retries exhausted");
+    LS.set("lift.dirty." + k, false); setStatus(k, "ok");
+    refreshIfIdle();
+  } catch (e) {
+    setStatus(k, navigator.onLine === false || e instanceof TypeError ? "offline" : "err", e.message);
+  } finally {
+    syncing[k] = false;
+    if (again[k]) { again[k] = false; sync(k); }
+  }
+}
+function setStatus(k, s, msg) { status[k] = { s, msg }; paintSync(); }
+function paintSync() {
+  const el = $("#sync"); if (!el) return;
+  const st = status[profile] || { s: cfg.token ? "busy" : "off" };
+  const dirty = LS.get("lift.dirty." + profile, false);
+  const map = { ok: ["ok", "Synced"], busy: ["busy", "Syncing…"], off: ["off", "Not syncing"],
+    offline: ["err", dirty ? "Offline · saved here" : "Offline"], err: ["err", "Sync error"] };
+  const [cls, txt] = map[st.s] || map.busy;
+  el.className = cls; el.innerHTML = "<i></i>" + txt;
+  el.title = st.msg || "";
+}
+function refreshIfIdle() {
+  if (["home", "routine", "history", "exhist"].includes(view.name) && !document.activeElement?.matches("input")) render();
+  else paintSync();
+}
+
+/* ---------------- formatting ---------------- */
+function fmtDate(iso, withYear) {
+  const d = new Date(iso);
+  const o = { weekday: "short", month: "short", day: "numeric" };
+  if (withYear || d.getFullYear() !== new Date().getFullYear()) o.year = "numeric";
+  return d.toLocaleDateString(undefined, o);
+}
+function lastLine(entry, date) {
+  return `<b>${esc(fmtDate(date))}</b> · ${esc(C.summarize(entry.sets, entry.parts))}`;
+}
+function toast(msg) {
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 2600);
+}
+function topbar(left, title, big) {
+  return `<div class="top">${left || ""}<h1 class="${big ? "big" : ""}">${title}</h1>
+    <button id="sync" data-act="settings"></button><button class="iconbtn" data-act="settings" aria-label="Settings">⚙︎</button></div>`;
+}
+const backBtn = (to = "home") => `<button class="back" data-act="go:${to}">‹ Back</button>`;
+
+/* ---------------- views ---------------- */
+function render() {
+  const app = $("#app");
+  document.querySelectorAll(".bar").forEach((b) => b.remove());
+  const v = VIEWS[view.name] || VIEWS.home;
+  app.innerHTML = v();
+  paintSync();
+}
+
+const VIEWS = {
+  home() {
+    const d = doc();
+    let h = topbar("", "Lift");
+    h += `<div class="seg">${C.PROFILES.map((p) => `<button data-act="prof:${p.key}" class="${p.key === profile ? "on" : ""}">${p.name}</button>`).join("")}</div>`;
+    if (!cfg.token) h += `<div class="banner warn"><b>Saving on this phone only. Set up sync in ⚙︎ so you can see each other's workouts.</b></div>`;
+    const dr = getDraft();
+    if (dr) h += `<div class="banner"><b>${esc(dr.routineName)} in progress</b><button class="btn pri sm" data-act="resume">Resume</button></div>`;
+    h += `<div class="tabs"><button data-act="tab:routines" class="${view.tab !== "history" ? "on" : ""}">Routines</button>
+      <button data-act="tab:history" class="${view.tab === "history" ? "on" : ""}">History</button></div>`;
+    if (view.tab === "history") return h + historyList(d);
+    const rs = C.liveRoutines(d);
+    const sess = C.liveSessions(d);
+    for (const r of rs) {
+      const last = sess.find((s) => s.routineId === r.id);
+      h += `<button class="card rcard" data-act="routine:${r.id}"><div class="nm">${esc(r.name)}</div>
+        <div class="sub">${r.exercises.length} exercise${r.exercises.length === 1 ? "" : "s"}${last ? " · last " + esc(fmtDate(last.date)) : ""}</div></button>`;
+    }
+    if (!rs.length) h += `<div class="empty">No routines yet.</div>`;
+    h += `<button class="btn ghost wide" data-act="newroutine">+ New routine</button>`;
+    return h;
+  },
+
+  routine() {
+    const d = doc(), r = d.routines.find((x) => x.id === view.id && !x.deleted);
+    if (!r) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
+    let h = topbar(backBtn("home"), esc(r.name), true);
+    h += `<div class="sub" style="margin:-6px 0 12px">${esc(pname(profile))}</div>`;
+    h += `<div class="row" style="margin-bottom:12px"><button class="btn pri grow" data-act="start:${r.id}">Start workout</button>
+      <button class="btn" data-act="editroutine:${r.id}">Edit</button></div>`;
+    if (!r.exercises.length) h += `<div class="empty">No exercises. Tap Edit to add some.</div>`;
+    for (const ex of r.exercises) {
+      const last = C.lastFor(d, ex.name);
+      h += `<div class="card"><div class="exname"><button data-act="exhist:${esc(ex.name)}">${esc(ex.name)}</button>
+        ${C.partsOf(ex) ? `<span class="pill">${C.partsOf(ex).length}-way</span>` : ""}</div>
+        <div class="last" style="margin-bottom:0">${last ? lastLine(last.entry, last.date) : "No history yet"}</div></div>`;
+    }
+    return h;
+  },
+
+  edit() {
+    let h = topbar(`<button class="back" data-act="canceledit">Cancel</button>`, ed.isNew ? "New routine" : "Edit routine");
+    h += `<label class="f">Name</label><input class="txt" data-f="name" value="${esc(ed.name)}" placeholder="e.g. Push" autocomplete="off">`;
+    h += `<label class="f">Exercises</label>`;
+    ed.exercises.forEach((ex, i) => {
+      h += `<div class="edrow" data-i="${i}">
+        <div class="row"><input class="txt grow" data-f="exname" list="exnames" value="${esc(ex.name)}" placeholder="Exercise name" autocomplete="off">
+          <button class="tiny" data-act="up:${i}" aria-label="Move up">↑</button><button class="tiny" data-act="down:${i}" aria-label="Move down">↓</button>
+          <button class="tiny" data-act="delrow:${i}" aria-label="Remove">✕</button></div>
+        <div class="row"><input class="txt grow" data-f="parts" value="${esc((ex.parts || []).join(", "))}" placeholder="Directions" autocomplete="off">
+          <button class="btn sm" data-act="fourway:${i}">4-way</button>
+          <input class="txt mini" data-f="sets" inputmode="numeric" pattern="[0-9]*" value="${ex.sets ?? 3}" aria-label="Default sets"><span class="sub" style="margin:0">sets</span></div>
+      </div>`;
+    });
+    h += `<button class="btn ghost wide" data-act="addrow">+ Add exercise</button>`;
+    h += `<p class="note" style="margin-top:12px">Directions split one exercise into parts that share a weight but get their own reps (e.g. 4-way neck: Front, Left, Right, Back). Sets = how many rows a first-ever workout starts with; after that it copies last time.</p>`;
+    if (!ed.isNew) h += `<button class="btn danger wide" style="margin-top:16px" data-act="delroutine">Delete routine</button>`;
+    const names = new Set();
+    for (const r of doc().routines) if (!r.deleted) r.exercises.forEach((e) => names.add(e.name));
+    for (const s of doc().sessions) if (!s.deleted) s.entries.forEach((e) => names.add(e.name));
+    h += `<datalist id="exnames">${[...names].sort().map((n) => `<option value="${esc(n)}">`).join("")}</datalist>`;
+    setTimeout(() => addBar(`<button class="btn pri" data-act="saveroutine">Save routine</button>`));
+    return h;
+  },
+
+  workout() {
+    const editing = !!editSess;
+    const dr = editing ? editSess : getDraft();
+    if (!dr) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
+    const d = doc();
+    let h = topbar(editing ? `<button class="back" data-act="canceledit2">Cancel</button>` : backBtn("home"), esc(dr.routineName), true);
+    h += `<div class="row sub" style="margin:-6px 0 12px">${esc(pname(profile))} · ${editing
+      ? `<input type="date" class="txt" style="width:auto;padding:4px 8px;font-size:14px" data-f="date" value="${isoToLocalDay(dr.date)}">`
+      : esc(fmtDate(dr.date))}</div>`;
+    dr.entries.forEach((e, ei) => {
+      const last = C.lastFor(d, e.name, dr.id, editing ? dr.date : null);
+      const ls = last ? last.entry.sets : [];
+      const parts = e.parts;
+      h += `<div class="card" data-ei="${ei}"><div class="exname">${esc(e.name)}${parts ? `<span class="pill">${parts.length}-way</span>` : ""}</div>
+        <div class="last">${last ? "Last " + lastLine(last.entry, last.date) : "First time — no history"}</div>
+        <div class="hdr"><span>Set</span><span style="text-align:center">lb</span><span style="text-align:center">Reps${parts ? " each" : ""}</span><span></span></div>`;
+      e.sets.forEach((s, si) => {
+        const l = ls[si];
+        h += `<div class="set" data-ei="${ei}" data-si="${si}"><span class="sn">${si + 1}</span>
+          <input class="num w" inputmode="decimal" value="${s.w ?? ""}" placeholder="${l ? esc(C.fmtW(l.w)) : "lb"}" aria-label="Weight set ${si + 1}">`;
+        if (parts) {
+          h += `<div class="parts" style="--n:${parts.length}">${parts.map((p, pi) =>
+            `<label>${si === 0 ? esc(p.slice(0, 5)) : ""}<input class="num r" data-pi="${pi}" inputmode="numeric" pattern="[0-9]*" value="${s.reps[pi] ?? ""}" placeholder="${l && l.reps[pi] != null ? l.reps[pi] : ""}" aria-label="${esc(p)} reps set ${si + 1}"></label>`).join("")}</div>`;
+        } else {
+          h += `<input class="num r" data-pi="0" inputmode="numeric" pattern="[0-9]*" value="${s.reps[0] ?? ""}" placeholder="${l ? l.reps[0] : "reps"}" aria-label="Reps set ${si + 1}">`;
+        }
+        h += `<span class="mk"></span></div>`;
+      });
+      h += `<div class="setbtns"><button class="btn sm" data-act="addset:${ei}">+ Set</button>${e.sets.length > 1 ? `<button class="btn sm" data-act="delset:${ei}">− Set</button>` : ""}</div></div>`;
+    });
+    h += `<button class="btn ghost wide" data-act="addex">+ Exercise (this workout only)</button>`;
+    h += `<p class="note" style="margin-top:10px">Grey numbers are last time. ▲ beat it, = matched, ▼ under. Empty sets are dropped when you save.</p>`;
+    if (editing) h += `<button class="btn danger wide" style="margin-top:16px" data-act="delsession">Delete workout</button>`;
+    setTimeout(() => {
+      addBar(editing ? `<button class="btn good" data-act="saveedit">Save changes</button>`
+        : `<button class="btn" data-act="discard">Discard</button><button class="btn good" data-act="finish">Finish &amp; save</button>`);
+      document.querySelectorAll(".set").forEach(paintMarker);
+    });
+    return h;
+  },
+
+  history() { view = { name: "home", tab: "history" }; return VIEWS.home(); },
+
+  exhist() {
+    const d = doc(), key = C.normName(view.ex);
+    let h = topbar(`<button class="back" data-act="goback">‹ Back</button>`, esc(view.ex), true);
+    const rows = [];
+    for (const s of C.liveSessions(d)) for (const e of s.entries) if (C.normName(e.name) === key) rows.push({ s, e });
+    if (!rows.length) return h + `<div class="empty">No history for this exercise yet.</div>`;
+    let best = null;
+    for (const { s, e } of rows) for (const st of e.sets) {
+      if (!best || C.compareSet(st, best.st) === "up") best = { st, s, e };
+    }
+    h += `<div class="card"><div class="sub" style="margin:0">Best set</div><div class="nm" style="font-size:20px;font-weight:800;margin-top:2px">${esc(C.fmtSet(best.st, best.e.parts))}</div>
+      <div class="sub">${esc(fmtDate(best.s.date, true))}</div></div>`;
+    h += `<div class="card hist">${rows.map(({ s, e }) => `<div class="l"><span>${esc(fmtDate(s.date))}</span> · ${esc(C.summarize(e.sets, e.parts))}</div>`).join("")}</div>`;
+    return h;
+  },
+
+  settings() {
+    let h = topbar(backBtn("home"), "Settings");
+    h += `<div class="card"><div class="exname">Sync</div>
+      <p class="note" style="margin:6px 0 4px">Workouts save to a private GitHub repo, one file per person. Use the same repo and token on both phones.</p>
+      <label class="f">Repo (owner/name)</label><input class="txt" id="repo" value="${esc(cfg.repo)}" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label class="f">Token</label><input class="txt" id="token" type="password" value="${esc(cfg.token)}" placeholder="github_pat_…" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="row" style="margin-top:12px"><button class="btn pri grow" data-act="savecfg">Save &amp; test</button><button class="btn" data-act="syncnow">Sync now</button></div>
+      <div class="note" id="cfgmsg" style="margin-top:8px"></div></div>`;
+    h += `<div class="card"><div class="exname">Backup</div>
+      <p class="note" style="margin:6px 0 10px">Download everything (both people) as a file, or merge a backup file back in.</p>
+      <div class="row"><button class="btn grow" data-act="export">Export</button><button class="btn grow" data-act="import">Import</button></div>
+      <input type="file" id="importfile" accept="application/json,.json" hidden></div>`;
+    h += `<div class="card"><div class="exname">Install</div><p class="note" style="margin-top:6px">iPhone: open in Safari → Share → Add to Home Screen. It then opens full-screen like an app.</p></div>`;
+    return h;
+  },
+};
+
+function historyList(d) {
+  const ss = C.liveSessions(d);
+  if (!ss.length) return `<div class="empty">No workouts logged for ${esc(pname(profile))} yet.</div>`;
+  return ss.map((s) => `<button class="card rcard hist" data-act="opensession:${s.id}">
+      <div class="d">${esc(fmtDate(s.date))} · ${esc(s.routineName)}</div>
+      ${s.entries.map((e) => `<div class="l"><span>${esc(e.name)}</span> ${esc(C.summarize(e.sets, e.parts))}</div>`).join("")}
+    </button>`).join("");
+}
+
+function addBar(inner) {
+  document.querySelectorAll(".bar").forEach((b) => b.remove());
+  const b = document.createElement("div"); b.className = "bar"; b.innerHTML = `<div class="in">${inner}</div>`;
+  document.body.appendChild(b);
+}
+function isoToLocalDay(iso) {
+  const d = new Date(iso);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function go(v) { view = v; render(); window.scrollTo(0, 0); }
+
+/* ---------------- workout editing ---------------- */
+function curDraft() { return editSess || getDraft(); }
+function storeDraft(dr) { if (editSess) editSess = dr; else putDraft(dr); }
+function paintMarker(row) {
+  const dr = curDraft(); if (!dr) return;
+  const ei = +row.dataset.ei, si = +row.dataset.si, e = dr.entries[ei];
+  const last = C.lastFor(doc(), e.name, dr.id, editSess ? dr.date : null);
+  const r = C.compareSet(e.sets[si], last && last.entry.sets[si]);
+  const mk = $(".mk", row);
+  mk.className = "mk " + (r || ""); mk.textContent = { up: "▲", down: "▼", same: "=" }[r] || "";
+}
+
+document.addEventListener("input", (ev) => {
+  const t = ev.target;
+  if (view.name === "workout") {
+    const dr = curDraft();
+    if (t.dataset.f === "date") { if (t.value) { dr.date = new Date(t.value + "T12:00:00").toISOString(); storeDraft(dr); } return; }
+    const row = t.closest(".set"); if (!row || !dr) return;
+    const s = dr.entries[+row.dataset.ei].sets[+row.dataset.si];
+    if (t.classList.contains("w")) s.w = C.parseNum(t.value);
+    else if (t.classList.contains("r")) { const n = C.parseNum(t.value); s.reps[+t.dataset.pi] = n === null ? null : Math.max(0, Math.round(n)); }
+    storeDraft(dr); paintMarker(row);
+  } else if (view.name === "edit") {
+    const f = t.dataset.f; if (!f) return;
+    if (f === "name") { ed.name = t.value; return; }
+    const i = +t.closest(".edrow").dataset.i, ex = ed.exercises[i];
+    if (f === "exname") ex.name = t.value;
+    if (f === "parts") ex.parts = t.value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (f === "sets") { const n = C.parseNum(t.value); ex.sets = n && n > 0 ? Math.min(20, Math.round(n)) : 3; }
+  }
+});
+/* When a weight changes, carry it down to later sets that are blank or still hold
+   the old value with no reps logged yet (so 185 → 155 on set 2 also moves set 3). */
+let focusW = null;
+document.addEventListener("focusin", (ev) => {
+  if (ev.target.classList?.contains("w")) focusW = C.parseNum(ev.target.value);
+});
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (view.name !== "workout" || !t.classList.contains("w")) return;
+  const row = t.closest(".set"), dr = curDraft();
+  const ei = +row.dataset.ei, si = +row.dataset.si, sets = dr.entries[ei].sets, w = sets[si].w;
+  const was = focusW; focusW = w;
+  if (w === null) return;
+  for (let j = si + 1; j < sets.length; j++) {
+    const sj = sets[j];
+    if (C.setFilled(sj) || !(sj.w === null || sj.w === was)) break;
+    sj.w = w;
+    const inp = $(`.set[data-ei="${ei}"][data-si="${j}"] .w`); if (inp) inp.value = w;
+  }
+  storeDraft(dr);
+  document.querySelectorAll(`.set[data-ei="${ei}"]`).forEach(paintMarker);
+});
+
+/* ---------------- actions ---------------- */
+const ACTIONS = {
+  go: (to) => go({ name: to, tab: "routines" }),
+  tab: (t) => go({ name: "home", tab: t }),
+  prof: (k) => { profile = k; LS.set("lift.profile", k); doc(k); render(); sync(k); },
+  routine: (id) => go({ name: "routine", id }),
+  exhist: (ex) => go({ name: "exhist", ex, back: { ...view } }),
+  goback: () => go(view.back || { name: "home", tab: "routines" }),
+  newroutine: () => { ed = { id: C.uid(), name: "", exercises: [{ id: C.uid(), name: "", sets: 3 }], isNew: true }; go({ name: "edit" }); },
+  editroutine: (id) => { const r = doc().routines.find((x) => x.id === id); ed = JSON.parse(JSON.stringify(r)); go({ name: "edit", id }); },
+  canceledit: () => go(ed && !ed.isNew ? { name: "routine", id: ed.id } : { name: "home", tab: "routines" }),
+  addrow: () => { ed.exercises.push({ id: C.uid(), name: "", sets: 3 }); render(); const ins = document.querySelectorAll('[data-f="exname"]'); ins[ins.length - 1]?.focus(); },
+  delrow: (i) => { ed.exercises.splice(+i, 1); render(); },
+  up: (i) => { i = +i; if (i > 0) [ed.exercises[i - 1], ed.exercises[i]] = [ed.exercises[i], ed.exercises[i - 1]]; render(); },
+  down: (i) => { i = +i; if (i < ed.exercises.length - 1) [ed.exercises[i + 1], ed.exercises[i]] = [ed.exercises[i], ed.exercises[i + 1]]; render(); },
+  fourway: (i) => { const ex = ed.exercises[+i]; ex.parts = ["Front", "Left", "Right", "Back"]; if (!ex.sets || ex.sets === 3) ex.sets = 2; render(); },
+  saveroutine: () => {
+    const name = ed.name.trim();
+    if (!name) { toast("Give the routine a name"); return; }
+    const exercises = ed.exercises.filter((e) => e.name.trim()).map((e) => {
+      const o = { id: e.id, name: e.name.trim(), sets: e.sets || 3 };
+      if (e.parts && e.parts.length) o.parts = e.parts; return o;
+    });
+    mutate((d) => {
+      const old = d.routines.find((r) => r.id === ed.id);
+      const rec = { id: ed.id, name, exercises, updatedAt: Date.now(),
+        order: old ? old.order : Math.max(-1, ...d.routines.map((r) => r.order ?? 0)) + 1 };
+      if (old) { Object.assign(old, rec); delete old.deleted; } else d.routines.push(rec);
+    });
+    toast("Saved"); go({ name: "routine", id: ed.id });
+  },
+  delroutine: () => {
+    if (!confirm(`Delete routine "${ed.name}"? Past workouts stay in History.`)) return;
+    mutate((d) => { const r = d.routines.find((x) => x.id === ed.id); if (r) { r.deleted = true; r.updatedAt = Date.now(); } });
+    go({ name: "home", tab: "routines" });
+  },
+  start: (id) => {
+    const r = doc().routines.find((x) => x.id === id), dr = getDraft();
+    if (dr && dr.routineId === id) { go({ name: "workout" }); return; }
+    if (dr && !confirm(`Discard the ${dr.routineName} workout in progress?`)) return;
+    editSess = null;
+    putDraft(C.newDraft(doc(), r, new Date().toISOString()));
+    go({ name: "workout" });
+  },
+  resume: () => { editSess = null; go({ name: "workout" }); },
+  addset: (ei) => {
+    const dr = curDraft(), e = dr.entries[+ei], prev = e.sets[e.sets.length - 1];
+    e.sets.push({ w: prev ? prev.w : null, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
+    storeDraft(dr); keepScroll(render);
+  },
+  delset: (ei) => {
+    const dr = curDraft(), e = dr.entries[+ei];
+    const lastSet = e.sets[e.sets.length - 1];
+    if (C.setFilled(lastSet) && !confirm("Remove the last set? It has reps entered.")) return;
+    e.sets.pop(); storeDraft(dr); keepScroll(render);
+  },
+  addex: () => {
+    const name = (prompt("Exercise name") || "").trim(); if (!name) return;
+    const dr = curDraft(), last = C.lastFor(doc(), name, dr.id);
+    const parts = last ? last.entry.parts || null : null, n = parts ? parts.length : 1;
+    const sets = last ? last.entry.sets.map((s) => ({ w: s.w, reps: new Array(n).fill(null) })) : [0, 1, 2].map(() => ({ w: null, reps: [null] }));
+    dr.entries.push({ exId: null, name, parts, sets }); storeDraft(dr); keepScroll(render);
+  },
+  finish: () => {
+    const dr = getDraft(), sess = C.finalizeDraft(dr, Date.now());
+    if (!sess.entries.length) { if (confirm("Nothing entered. Discard this workout?")) { putDraft(null); go({ name: "home", tab: "routines" }); } return; }
+    let up = 0, total = 0;
+    for (const e of sess.entries) {
+      const last = C.lastFor(doc(), e.name, sess.id);
+      e.sets.forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
+    }
+    mutate((d) => d.sessions.push(sess));
+    putDraft(null);
+    toast(`Saved · ${total} set${total === 1 ? "" : "s"}${up ? ` · beat ${up}` : ""}`);
+    go({ name: "home", tab: "history" });
+  },
+  discard: () => { if (!confirm("Discard this workout? Nothing will be saved.")) return; putDraft(null); go({ name: "home", tab: "routines" }); },
+  opensession: (id) => { const s = doc().sessions.find((x) => x.id === id); editSess = JSON.parse(JSON.stringify(s)); go({ name: "workout" }); },
+  canceledit2: () => { editSess = null; go({ name: "home", tab: "history" }); },
+  saveedit: () => {
+    const sess = C.finalizeDraft(editSess, Date.now());
+    mutate((d) => { const i = d.sessions.findIndex((x) => x.id === sess.id); d.sessions[i] = sess; });
+    editSess = null; toast("Saved"); go({ name: "home", tab: "history" });
+  },
+  delsession: () => {
+    if (!confirm("Delete this workout from history?")) return;
+    const id = editSess.id;
+    mutate((d) => { const s = d.sessions.find((x) => x.id === id); s.deleted = true; s.updatedAt = Date.now(); });
+    editSess = null; go({ name: "home", tab: "history" });
+  },
+  settings: () => go({ name: "settings" }),
+  savecfg: async () => {
+    cfg = { repo: $("#repo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, ""), token: $("#token").value.trim() };
+    LS.set("lift.cfg", cfg);
+    const msg = $("#cfgmsg"); msg.textContent = "Testing…";
+    try {
+      const res = await gh("");
+      if (res.status === 404 || res.status === 401) { msg.textContent = res.status === 401 ? "Token rejected (expired or mistyped)." : "Repo not found, or the token can't see it."; return; }
+      const j = await res.json();
+      if (!j.permissions || !j.permissions.push) { msg.textContent = "Token can read but not write. Give it Contents: Read and write."; return; }
+      if (!j.private) msg.textContent = "Connected — but this repo is PUBLIC. Make it private. ";
+      else msg.textContent = "Connected. ";
+      for (const p of C.PROFILES) { doc(p.key); await sync(p.key); }
+      const bad = C.PROFILES.filter((p) => status[p.key]?.s !== "ok");
+      msg.textContent += bad.length ? "Sync failed: " + bad.map((p) => status[p.key]?.msg).join("; ") : "Both profiles synced.";
+    } catch (e) { msg.textContent = "Couldn't reach GitHub: " + e.message; }
+  },
+  syncnow: async () => { for (const p of C.PROFILES) await sync(p.key); toast(status[profile]?.s === "ok" ? "Synced" : "Sync failed"); },
+  export: () => {
+    const out = { exportedAt: new Date().toISOString(), profiles: {} };
+    for (const p of C.PROFILES) out.profiles[p.key] = doc(p.key);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: "application/json" }));
+    a.download = "lift-backup-" + isoToLocalDay(new Date().toISOString()) + ".json"; a.click();
+  },
+  import: () => $("#importfile").click(),
+};
+function keepScroll(fn) { const y = window.scrollY; fn(); window.scrollTo(0, y); }
+
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-act]"); if (!b) return;
+  const a = b.dataset.act, i = a.indexOf(":");
+  const name = i < 0 ? a : a.slice(0, i), arg = i < 0 ? undefined : a.slice(i + 1);
+  if (ACTIONS[name]) ACTIONS[name](arg);
+});
+document.addEventListener("change", async (ev) => {
+  if (ev.target.id !== "importfile") return;
+  const f = ev.target.files[0]; if (!f) return;
+  try {
+    const j = JSON.parse(await f.text()); let n = 0;
+    for (const p of C.PROFILES) {
+      const d = j.profiles && j.profiles[p.key];
+      if (C.validDoc(d)) { mutate((cur) => { const m = C.mergeDocs(cur, d); cur.routines = m.routines; cur.sessions = m.sessions; }, p.key); n++; }
+    }
+    toast(n ? "Imported and merged" : "No profiles found in that file");
+  } catch (e) { toast("Couldn't read that file"); }
+});
+
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") sync(profile); });
+window.addEventListener("online", () => { for (const p of C.PROFILES) if (LS.get("lift.dirty." + p.key, false)) sync(p.key); });
+
+render();
+for (const p of C.PROFILES) sync(p.key);
+if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
