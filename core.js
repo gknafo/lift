@@ -48,22 +48,160 @@
     return [...map.values()];
   }
 
+  /* ---------- in-progress workouts, shared live between phones ----------
+     Merge only ever adds. Rules, all deterministic and order-independent:
+     - doc.drafts is a map by workout id; two phones starting workouts can't overwrite each other.
+     - every weight and every rep has its own edit time (wt, rt[i]); the newer edit of that one field wins.
+     - sets have ids; adding on two phones keeps both; a deleted set comes back if anything in it is
+       edited after the delete (dt).
+     - state only moves forward: live < discarded < finished.
+     - a finished workout's saved session is rebuilt from the merged workout, so sets that reach the
+       file after Finish (from the other phone) still land in it — unless the session was edited or
+       deleted by hand in History. */
+  const RANK = { live: 0, discarded: 1, finished: 2 };
+
+  function canon(x) {
+    if (Array.isArray(x)) return "[" + x.map(canon).join(",") + "]";
+    if (x && typeof x === "object") return "{" + Object.keys(x).filter((k) => x[k] !== undefined).sort()
+      .map((k) => JSON.stringify(k) + ":" + canon(x[k])).join(",") + "}";
+    return JSON.stringify(x === undefined ? null : x);
+  }
+  const pickNewer = (va, ta, vb, tb) => (tb > ta ? [vb, tb] : ta > tb ? [va, ta] : canon(vb) > canon(va) ? [vb, tb] : [va, ta]);
+
+  function setTimes(x) { return Math.max(x.wt || 0, ...(x.rt || []).map((t) => t || 0)); }
+  function setLive(x) { return !x.dt || setTimes(x) > x.dt; }
+  function mergeSet(a, b) {
+    const [w, wt] = pickNewer(a.w ?? null, a.wt || 0, b.w ?? null, b.wt || 0);
+    const n = Math.max(a.reps.length, b.reps.length), reps = [], rt = [];
+    for (let i = 0; i < n; i++) {
+      const [v, t] = pickNewer(a.reps[i] ?? null, (a.rt || [])[i] || 0, b.reps[i] ?? null, (b.rt || [])[i] || 0);
+      reps.push(v); rt.push(t);
+    }
+    const out = { id: a.id, c: Math.min(a.c ?? 0, b.c ?? 0), w, wt, reps, rt };
+    const dt = Math.max(a.dt || 0, b.dt || 0); if (dt) out.dt = dt;
+    return out;
+  }
+  const byOrder = (key) => (x, y) => (x[key] ?? 0) - (y[key] ?? 0) || (x.id || x.k) .localeCompare(y.id || y.k);
+  function mergeEntry(a, b) {
+    const m = new Map(a.sets.map((x) => [x.id, x]));
+    for (const y of b.sets) m.set(y.id, m.has(y.id) ? mergeSet(m.get(y.id), y) : y);
+    const base = canon({ ...a, sets: 0 }) >= canon({ ...b, sets: 0 }) ? a : b;
+    return { ...base, sets: [...m.values()].sort(byOrder("c")) };
+  }
+  function mergeDraft(a, b) {
+    if (!a) return b; if (!b) return a;
+    const sa = RANK[a.state] ?? 0, sb = RANK[b.state] ?? 0;
+    const state = sa >= sb ? a.state : b.state;
+    const meta = canon({ ...a, entries: 0, state: 0, endedAt: 0, startedAt: 0, pruned: 0 }) >= canon({ ...b, entries: 0, state: 0, endedAt: 0, startedAt: 0, pruned: 0 }) ? a : b;
+    const out = { ...meta, state, startedAt: Math.min(a.startedAt || 0, b.startedAt || 0) };
+    const ended = Math.max(a.endedAt || 0, b.endedAt || 0); if (ended) out.endedAt = ended; else delete out.endedAt;
+    if (a.pruned || b.pruned) { out.pruned = true; out.entries = []; return out; }
+    delete out.pruned;
+    const m = new Map(a.entries.map((e) => [e.k, e]));
+    for (const e of b.entries) m.set(e.k, m.has(e.k) ? mergeEntry(m.get(e.k), e) : e);
+    out.entries = [...m.values()].sort(byOrder("ord"));
+    return out;
+  }
+  function mergeDrafts(a, b) {
+    const out = {};
+    for (const id of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) out[id] = mergeDraft((a || {})[id], (b || {})[id]);
+    return out;
+  }
+  function draftActivity(d) {
+    let t = d.startedAt || 0;
+    for (const e of d.entries || []) for (const x of e.sets) t = Math.max(t, setTimes(x), x.dt || 0);
+    return Math.max(t, d.endedAt || 0);
+  }
+  function liveDrafts(doc) {
+    const has = (d) => (d.entries || []).some((e) => e.sets.some((x) => setTimes(x) > 0)) ? 1 : 0;
+    return Object.values((doc && doc.drafts) || {}).filter((d) => d.state === "live")
+      .sort((x, y) => has(y) - has(x) || draftActivity(y) - draftActivity(x) || (x.id < y.id ? -1 : 1));
+  }
+  function currentDraft(doc) { return liveDrafts(doc)[0] || null; }
+  function visibleSets(e) { return e.sets.filter(setLive); }
+
+  /* edits (each stamps its own field) */
+  function editW(x, v, now) { x.w = v; x.wt = now; }
+  function editRep(x, i, v, now) { x.reps[i] = v; x.rt = x.rt || []; x.rt[i] = now; }
+  function addSet(e, w, now) {
+    const n = e.parts && e.parts.length ? e.parts.length : 1;
+    e.sets.push({ id: "s" + uid(), c: now, w, wt: w === null ? 0 : now, reps: new Array(n).fill(null), rt: new Array(n).fill(0) });
+  }
+  function delSet(x, now) { x.dt = Math.max(now, setTimes(x) + 1); }
+  function endDraft(d, state, now) {
+    if ((RANK[state] ?? 0) > (RANK[d.state] ?? 0)) d.state = state;
+    d.endedAt = Math.max(d.endedAt || 0, now);
+  }
+
+  function draftToSession(d) {
+    return finalizeDraft({ id: d.id, routineId: d.routineId, routineName: d.routineName, date: d.date,
+      entries: d.entries.map((e) => ({ exId: e.exId, name: e.name, parts: e.parts || null, sets: visibleSets(e) })) }, draftActivity(d));
+  }
+  /* Rebuild sessions from finished workouts; deterministic given the merged doc. */
+  function reconcile(doc) {
+    for (const d of Object.values(doc.drafts || {})) {
+      if (d.state !== "finished" || d.pruned) continue;
+      const i = doc.sessions.findIndex((s) => s.id === d.id);
+      const cur = i >= 0 ? doc.sessions[i] : null;
+      if (cur && (cur.edited || cur.deleted)) continue;
+      const built = { ...draftToSession(d), derived: true };
+      if (!built.entries.length) continue;
+      if (i >= 0) doc.sessions[i] = built; else doc.sessions.push(built);
+    }
+    return doc;
+  }
+  /* Finished/discarded workouts older than this keep only a stub (their session is already saved). */
+  function pruneDrafts(doc, now, ageMs = 14 * 864e5) {
+    for (const d of Object.values(doc.drafts || {})) {
+      if (d.state !== "live" && !d.pruned && (d.endedAt || 0) < now - ageMs) { d.pruned = true; d.entries = []; }
+    }
+  }
+  /* A workout saved in this browser by the previous app version (localStorage lift.draft.<person>). */
+  function migrateLegacyDraft(doc, old, now) {
+    if (!old || !old.id || (doc.drafts && doc.drafts[old.id]) || doc.sessions.some((s) => s.id === old.id)) return false;
+    const started = Date.parse(old.date) || now;
+    doc.drafts = doc.drafts || {};
+    doc.drafts[old.id] = { id: old.id, routineId: old.routineId, routineName: old.routineName, date: old.date,
+      startedAt: started, state: "live",
+      entries: (old.entries || []).map((e, ei) => ({ k: "m" + ei, ord: ei, exId: e.exId ?? null, name: e.name, parts: e.parts || null,
+        wmode: e.wmode === "diff" ? "diff" : "same",
+        sets: (e.sets || []).map((x, si) => ({ id: "s" + si, c: si, w: x.w ?? null, wt: x.w == null ? 0 : started,
+          reps: (x.reps || []).slice(), rt: (x.reps || []).map((r) => (r == null ? 0 : started)) })) })) };
+    return true;
+  }
+
+  function mergeSessions(a, b) {
+    const manual = (s) => (s.edited || s.deleted ? 1 : 0);
+    const map = new Map();
+    for (const y of [...(a || []), ...(b || [])]) {
+      const x = map.get(y.id);
+      if (!x) { map.set(y.id, y); continue; }
+      const kx = [manual(x), x.updatedAt || 0], ky = [manual(y), y.updatedAt || 0];
+      if (ky[0] > kx[0] || (ky[0] === kx[0] && (ky[1] > kx[1] || (ky[1] === kx[1] && canon(y) > canon(x))))) map.set(y.id, y);
+    }
+    return [...map.values()];
+  }
+
   function mergeDocs(a, b) {
     a = a || emptyDoc();
     b = b || emptyDoc();
-    return {
+    const out = {
       schema: SCHEMA,
       routines: mergeList(a.routines, b.routines),
-      sessions: mergeList(a.sessions, b.sessions),
+      sessions: mergeSessions(a.sessions, b.sessions),
     };
+    const drafts = mergeDrafts(a.drafts, b.drafts);
+    if (Object.keys(drafts).length) out.drafts = drafts;
+    return reconcile(out);
   }
 
   function sameDoc(a, b) {
-    const canon = (d) => JSON.stringify({
+    const norm = (d) => canon({
       r: [...d.routines].sort((x, y) => (x.id < y.id ? -1 : 1)),
       s: [...d.sessions].sort((x, y) => (x.id < y.id ? -1 : 1)),
+      d: d.drafts || {},
     });
-    return canon(a) === canon(b);
+    return norm(a) === norm(b);
   }
 
   function liveRoutines(doc) {
@@ -119,22 +257,15 @@
 
   /* New workout: weights carried from last time, reps left blank to beat. */
   function newDraft(doc, routine, nowIso) {
+    const started = Date.parse(nowIso) || Date.now();
     return {
-      id: uid(),
-      routineId: routine.id,
-      routineName: routine.name,
-      date: nowIso,
-      isNew: true,
-      entries: routine.exercises.map((ex) => {
+      id: uid(), routineId: routine.id, routineName: routine.name, date: nowIso, startedAt: started, state: "live",
+      entries: routine.exercises.map((ex, ei) => {
         const last = lastFor(doc, ex.name, null);
         const n = nReps(ex);
-        let sets;
-        if (last) {
-          sets = last.entry.sets.map((s) => ({ w: s.w ?? null, reps: new Array(n).fill(null) }));
-        } else {
-          sets = Array.from({ length: ex.sets || 3 }, () => ({ w: null, reps: new Array(n).fill(null) }));
-        }
-        return { exId: ex.id, name: ex.name, parts: partsOf(ex), wmode: ex.wmode === "diff" ? "diff" : "same", sets };
+        const ws = last ? last.entry.sets.map((x) => x.w ?? null) : new Array(ex.sets || 3).fill(null);
+        return { k: "e" + ei, ord: ei, exId: ex.id, name: ex.name, parts: partsOf(ex), wmode: ex.wmode === "diff" ? "diff" : "same",
+          sets: ws.map((w, si) => ({ id: "s" + si, c: si, w, wt: 0, reps: new Array(n).fill(null), rt: new Array(n).fill(0) })) };
       }),
     };
   }
@@ -207,7 +338,8 @@
   const api = {
     SCHEMA, PROFILES, uid, normName, emptyDoc, seedDoc, mergeDocs, sameDoc, liveRoutines,
     liveSessions, partsOf, nReps, lastFor, totalReps, setFilled, compareSet, newDraft,
-    finalizeDraft, fmtW, fmtSet, summarize, parseNum, b64encode, b64decode, validDoc,
+    finalizeDraft, mergeDraft, mergeDrafts, liveDrafts, currentDraft, visibleSets, editW, editRep, addSet, delSet,
+    endDraft, reconcile, pruneDrafts, migrateLegacyDraft, draftActivity, canon, fmtW, fmtSet, summarize, parseNum, b64encode, b64decode, validDoc,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LiftCore = api;

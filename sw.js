@@ -1,7 +1,7 @@
 /* Network-first for the app's own files so updates show up right away;
    falls back to the cached copy when the gym has no signal.
    GitHub API calls are never touched. */
-const CACHE = "lift-v2";
+const CACHE = "lift-v3";
 const FILES = ["./", "index.html", "core.js", "manifest.json", "icon.png", "favicon-32.png"];
 
 self.addEventListener("install", (e) => {

@@ -161,7 +161,7 @@ def test_full_flow(server):
         expect(A.locator(".banner", has_text="Gav: Push")).to_be_visible()
         A.get_by_role("button", name="Resume").click()
         expect(A.locator('.set[data-ei="0"][data-si="0"] .w')).to_have_value("185")
-        A.get_by_role("button", name="Finish & save").click()
+        A.get_by_role("button", name="Finish Gav").click()
         expect(A.locator(".hist .d").first).to_contain_text("Push")
         wait_synced(A)
         sess = gh.doc("gav.json")["sessions"]
@@ -179,7 +179,7 @@ def test_full_flow(server):
         set_row(A, 0, 0, 10, [12, 12, 10, 11])
         set_row(A, 0, 1, None, [12, 11, 10, 10])
         shot(A, "04-neck-workout.png")
-        A.get_by_role("button", name="Finish & save").click()
+        A.get_by_role("button", name="Finish Gav").click()
         wait_synced(A)
         neck = [s for s in gh.doc("gav.json")["sessions"] if s["routineName"] == "Upper"][0]["entries"][0]
         assert neck["sets"] == [{"w": 10, "reps": [12, 12, 10, 11]}, {"w": 10, "reps": [12, 11, 10, 10]}]
@@ -223,7 +223,7 @@ def test_full_flow(server):
         B.locator(".rcard", has_text="Pull").click()
         B.get_by_role("button", name="Edit").click()
         B.locator('[data-f="name"]').fill("Pull A")
-        A.get_by_role("button", name="Finish & save").click()
+        A.get_by_role("button", name="Finish Gav").click()
         B.get_by_role("button", name="Save routine").click()
         wait_synced(A); wait_synced(B)
         A.wait_for_timeout(1500)
@@ -259,7 +259,7 @@ def test_full_flow(server):
         A.get_by_role("button", name="Save routine").click()
         A.get_by_role("button", name="Start workout").click()
         set_row(A, 0, 0, 225, [5])
-        A.get_by_role("button", name="Finish & save").click()
+        A.get_by_role("button", name="Finish Gav").click()
         expect(A.locator("#sync")).to_contain_text("Offline", timeout=8000)
         assert not any(s["routineName"] == "Legs" for s in gh.doc("gav.json")["sessions"])
         gh.offline.discard("A")

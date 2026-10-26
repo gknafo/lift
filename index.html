@@ -58,6 +58,8 @@
   .stack > * + * { margin-top:8px; }
   .exname { font-size:18px; font-weight:800; display:flex; align-items:baseline; gap:8px; }
   .exname button { background:none; border:none; text-align:left; font-weight:800; font-size:18px; padding:0; }
+  .who { margin:12px 0 0; font-size:12px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--acc); }
+  .who.sep { border-top:1px solid var(--line); margin-top:14px; padding-top:12px; }
   .last { color:var(--dim); font-size:13px; margin:3px 0 8px; font-variant-numeric:tabular-nums; }
   .last b { color:#b9bfd0; font-weight:600; }
   .hdr { display:grid; grid-template-columns:24px 78px 1fr 22px; gap:8px; color:var(--dim); font-size:11px;
@@ -125,16 +127,49 @@ function doc(k = profile) {
   if (!docs[k]) {
     const cached = LS.get("lift.doc." + k, null);
     docs[k] = C.validDoc(cached) ? cached : C.seedDoc(k);
+    const old = LS.get("lift.draft." + k, null); // a workout left open by the previous app version
+    if (old) {
+      if (C.migrateLegacyDraft(docs[k], old, Date.now())) LS.set("lift.dirty." + k, true);
+      saveLocal(k); LS.del("lift.draft." + k);
+    }
   }
   return docs[k];
 }
 function saveLocal(k) { LS.set("lift.doc." + k, docs[k]); }
+const edits = {};
 function mutate(fn, k = profile) {
-  const d = doc(k); fn(d); saveLocal(k);
+  const d = doc(k); fn(d); C.reconcile(d); saveLocal(k);
+  edits[k] = (edits[k] || 0) + 1;
   LS.set("lift.dirty." + k, true); scheduleSync(k);
 }
-function getDraft(k = profile) { return LS.get("lift.draft." + k, null); }
-function putDraft(d, k = profile) { if (d) LS.set("lift.draft." + k, d); else LS.del("lift.draft." + k); }
+/* Open workouts live in each person's synced file (doc.drafts, keyed by id), so either phone can log them. */
+const pick = {};
+function getDraft(k = profile) {
+  const d = doc(k), p = pick[k] && d.drafts && d.drafts[pick[k]];
+  return p && p.state === "live" ? p : C.currentDraft(d);
+}
+function otherOpen(k) { const cur = getDraft(k); return C.liveDrafts(doc(k)).filter((d) => !cur || d.id !== cur.id); }
+function newWorkout(k, routine) {
+  const d = C.newDraft(doc(k), routine, new Date().toISOString());
+  mutate((x) => { x.drafts = x.drafts || {}; x.drafts[d.id] = d; }, k);
+  delete pick[k]; // the copy with sets logged always shows first; others get an "also open" banner
+  return d;
+}
+function endWorkout(k, id, state) { mutate((x) => { if (x.drafts && x.drafts[id]) C.endDraft(x.drafts[id], state, Date.now()); }, k); }
+function findSet(who, did, ek, sid) {
+  const d = doc(who).drafts && doc(who).drafts[did];
+  const e = d && d.entries.find((x) => x.k === ek), s = e && e.sets.find((x) => x.id === sid);
+  return { d, e, s };
+}
+/* Pull the latest before starting a workout, so a phone doesn't start a second copy of one already open. */
+async function preSync(keys) {
+  if (!cfg.token) return;
+  const until = Date.now() + 3000;
+  await Promise.race([Promise.all(keys.map(async (k) => {
+    while (syncing[k] && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    await sync(k);
+  })), new Promise((r) => setTimeout(r, 3500))]);
+}
 const pname = (k) => (C.PROFILES.find((p) => p.key === k) || {}).name || k;
 
 /* ---------------- GitHub sync ---------------- */
@@ -178,19 +213,25 @@ async function sync(k) {
   if (!cfg.token || !cfg.repo) { setStatus(k, "off"); return; }
   if (syncing[k]) { again[k] = true; return; }
   syncing[k] = true; setStatus(k, "busy");
+  let changed = false;
+  const e0 = edits[k] || 0;
   try {
     let done = false;
     for (let attempt = 0; attempt < 4 && !done; attempt++) {
       const r = await ghGet(k);
+      const before = JSON.stringify(doc(k));
       const merged = C.mergeDocs(doc(k), r.doc);
+      C.pruneDrafts(merged, Date.now());
+      if (JSON.stringify(merged) !== before) changed = true;
       docs[k] = merged; saveLocal(k);
       if (r.doc && C.sameDoc(merged, r.doc)) { done = true; break; }
       try { await ghPut(k, merged, r.sha); done = true; }
       catch (e) { if (e.status !== 409 && e.status !== 422) throw e; }
     }
     if (!done) throw new Error("conflict retries exhausted");
-    LS.set("lift.dirty." + k, false); setStatus(k, "ok");
-    refreshIfIdle();
+    if ((edits[k] || 0) === e0) LS.set("lift.dirty." + k, false); // an edit made mid-sync stays dirty
+    setStatus(k, "ok");
+    if (changed) refreshIfIdle(); else paintSync();
   } catch (e) {
     setStatus(k, navigator.onLine === false || e instanceof TypeError ? "offline" : "err", e.message);
   } finally {
@@ -209,10 +250,21 @@ function paintSync() {
   el.className = cls; el.innerHTML = "<i></i>" + txt;
   el.title = st.msg || "";
 }
+let renderPending = false;
+document.addEventListener("focusout", () => setTimeout(() => {
+  if (renderPending && !document.activeElement?.matches("input")) refreshIfIdle();
+}, 50));
 function refreshIfIdle() {
-  if (["home", "routine", "history", "exhist"].includes(view.name) && !document.activeElement?.matches("input")) render();
-  else paintSync();
+  const typing = document.activeElement?.matches("input");
+  if (!typing && (["home", "routine", "history", "exhist"].includes(view.name) || (view.name === "workout" && !editSess))) {
+    const y = window.scrollY; render(); window.scrollTo(0, y); renderPending = false;
+  } else { if (typing) renderPending = true; paintSync(); }
 }
+/* While the app is open, pull the other phone's edits every 10 s. */
+setInterval(() => {
+  if (document.visibilityState !== "visible" || !cfg.token || !["home", "workout"].includes(view.name)) return;
+  for (const p of C.PROFILES) if (!syncing[p.key]) sync(p.key);
+}, 10000);
 
 /* ---------------- formatting ---------------- */
 function fmtDate(iso, withYear) {
@@ -316,54 +368,63 @@ const VIEWS = {
 
   workout() {
     const editing = !!editSess;
-    const dr = editing ? editSess : getDraft();
-    const anyLive = C.PROFILES.some((p) => getDraft(p.key));
-    if (!dr && (editing || !anyLive)) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
-    const d = doc();
-    let h = topbar(editing ? `<button class="back" data-act="canceledit2">Cancel</button>` : backBtn("home"), esc(dr ? dr.routineName : "Workout"), true);
-    if (!editing) {
-      h += `<div class="seg">${C.PROFILES.map((p) => `<button data-act="wprof:${p.key}" class="${p.key === profile ? "on" : ""}">${p.name}${getDraft(p.key) ? "" : " +"}</button>`).join("")}</div>`;
+    const live = C.PROFILES.filter((p) => getDraft(p.key));
+    if (editing ? !editSess : !live.length) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
+    const who = editing ? profile : (view.who || profile);
+    const title = editing ? editSess.routineName : [...new Set(live.map((p) => getDraft(p.key).routineName))].join(" + ");
+    let h = topbar(editing ? `<button class="back" data-act="canceledit2">Cancel</button>` : backBtn("home"), esc(title), true);
+    if (editing) {
+      h += `<div class="row sub" style="margin:-6px 0 12px">${esc(pname(profile))} · <input type="date" class="txt" style="width:auto;padding:4px 8px;font-size:14px" data-f="date" value="${isoToLocalDay(editSess.date)}"></div>`;
+      editSess.entries.forEach((e, ei) => { h += exCard([[profile, "#" + ei]], e.name, e.parts); });
+      h += `<button class="btn ghost wide" data-act="addex:${profile}">+ Exercise</button>`;
+      h += `<button class="btn danger wide" style="margin-top:16px" data-act="delsession">Delete workout</button>`;
+      setTimeout(() => { addBar(`<button class="btn good" data-act="saveedit">Save changes</button>`); paintAll(); });
+      return h;
     }
+    const tabs = [C.PROFILES[0], { key: "both", name: "Both" }, C.PROFILES[1]];
+    h += `<div class="seg">${tabs.map((p) => `<button data-act="wprof:${p.key}" class="${p.key === who ? "on" : ""}">${p.name}${p.key !== "both" && !getDraft(p.key) ? " +" : ""}</button>`).join("")}</div>`;
+    for (const p of C.PROFILES) {
+      if (who !== "both" && who !== p.key) continue;
+      for (const o of otherOpen(p.key)) {
+        const n = o.entries.reduce((a, e) => a + C.visibleSets(e).filter(C.setFilled).length, 0);
+        h += `<div class="banner"><b>${esc(p.name)} also has ${esc(o.routineName)} open (${n} set${n === 1 ? "" : "s"})</b>
+          <button class="btn sm" data-act="wpick:${p.key}:${o.id}">Show</button><button class="btn sm" data-act="wdiscard:${p.key}:${o.id}">Discard</button></div>`;
+      }
+    }
+
+    if (who === "both") {
+      // one card per exercise; each person's sets inside it, matched by exercise name
+      const rows = [], byName = new Map();
+      for (const p of live) getDraft(p.key).entries.forEach((e) => {
+        const key = C.normName(e.name);
+        let row = byName.get(key);
+        if (!row || row.some(([k]) => k === p.key)) { row = []; rows.push({ name: e.name, parts: e.parts, row }); byName.set(key, row); }
+        row.push([p.key, e.k]);
+      });
+      for (const r of rows) h += exCard(r.row, r.name, r.parts);
+      for (const p of C.PROFILES.filter((q) => !getDraft(q.key))) h += `<button class="btn wide" style="margin-bottom:10px" data-act="wprof:${p.key}">+ Add ${esc(p.name)} to this workout</button>`;
+      h += `<p class="note" style="margin-top:6px">Both shows ${C.PROFILES.map((p) => p.name).join(" and ")} on each exercise. Use a name tab for the parts you do apart. Either phone can log either person.</p>`;
+      setTimeout(() => { addBar(`<button class="btn good" data-act="finish:both">Finish both</button>`); paintAll(); });
+      return h;
+    }
+
+    const dr = getDraft(who);
     if (!dr) {
-      const other = C.PROFILES.find((p) => p.key !== profile && getDraft(p.key));
-      const want = other ? C.normName(getDraft(other.key).routineName) : "";
-      const rs = C.liveRoutines(d).sort((a, b) => (C.normName(b.name) === want) - (C.normName(a.name) === want));
-      h += `<p class="note" style="margin-bottom:10px">${esc(pname(profile))} isn't in this workout. Pick a routine to join; ${other ? esc(other.name) + "'s sets stay as they are." : ""}</p>`;
-      h += rs.map((r) => `<button class="card rcard" data-act="join:${r.id}"><div class="nm">${esc(r.name)}</div><div class="sub">${r.exercises.length} exercises${C.normName(r.name) === want ? " · same as " + esc(other.name) : ""}</div></button>`).join("");
+      const other = live[0];
+      const want = C.normName(getDraft(other.key).routineName);
+      const rs = C.liveRoutines(doc(who)).sort((a, b) => (C.normName(b.name) === want) - (C.normName(a.name) === want));
+      h += `<p class="note" style="margin-bottom:10px">${esc(pname(who))} isn't in this workout. Pick a routine to join; ${esc(other.name)}'s sets stay as they are.</p>`;
+      h += rs.map((r) => `<button class="card rcard" data-act="join:${who}:${r.id}"><div class="nm">${esc(r.name)}</div><div class="sub">${r.exercises.length} exercises${C.normName(r.name) === want ? " · same as " + esc(other.name) : ""}</div></button>`).join("");
       setTimeout(() => addBar(`<button class="btn" data-act="wprof:${other.key}">Back to ${esc(other.name)}</button>`));
       return h;
     }
-    h += `<div class="row sub" style="margin:-6px 0 12px">${esc(pname(profile))} · ${editing
-      ? `<input type="date" class="txt" style="width:auto;padding:4px 8px;font-size:14px" data-f="date" value="${isoToLocalDay(dr.date)}">`
-      : esc(fmtDate(dr.date))}</div>`;
-    dr.entries.forEach((e, ei) => {
-      const last = C.lastFor(d, e.name, dr.id, editing ? dr.date : null);
-      const ls = last ? last.entry.sets : [];
-      const parts = e.parts;
-      h += `<div class="card" data-ei="${ei}"><div class="exname">${esc(e.name)}${parts ? `<span class="pill">${parts.length}-way</span>` : ""}</div>
-        <div class="last">${last ? "Last " + lastLine(last.entry, last.date) : "First time — no history"}</div>
-        <div class="hdr"><span>Set</span><span style="text-align:center">lb</span><span style="text-align:center">Reps${parts ? " each" : ""}</span><span></span></div>`;
-      e.sets.forEach((s, si) => {
-        const l = ls[si];
-        h += `<div class="set" data-ei="${ei}" data-si="${si}"><span class="sn">${si + 1}</span>
-          <input class="num w" inputmode="decimal" value="${s.w ?? ""}" placeholder="${l ? esc(C.fmtW(l.w)) : "lb"}" aria-label="Weight set ${si + 1}">`;
-        if (parts) {
-          h += `<div class="parts" style="--n:${parts.length}">${parts.map((p, pi) =>
-            `<label>${si === 0 ? esc(p.slice(0, 5)) : ""}<input class="num r" data-pi="${pi}" inputmode="numeric" pattern="[0-9]*" value="${s.reps[pi] ?? ""}" placeholder="${l && l.reps[pi] != null ? l.reps[pi] : ""}" aria-label="${esc(p)} reps set ${si + 1}"></label>`).join("")}</div>`;
-        } else {
-          h += `<input class="num r" data-pi="0" inputmode="numeric" pattern="[0-9]*" value="${s.reps[0] ?? ""}" placeholder="${l ? l.reps[0] : "reps"}" aria-label="Reps set ${si + 1}">`;
-        }
-        h += `<span class="mk"></span></div>`;
-      });
-      h += `<div class="setbtns"><button class="btn sm" data-act="addset:${ei}">+ Set</button>${e.sets.length > 1 ? `<button class="btn sm" data-act="delset:${ei}">− Set</button>` : ""}</div></div>`;
-    });
-    h += `<button class="btn ghost wide" data-act="addex">+ Exercise (this workout only)</button>`;
+    h += `<div class="sub" style="margin:-4px 0 12px">${esc(pname(who))} · ${esc(fmtDate(dr.date))}</div>`;
+    dr.entries.forEach((e) => { h += exCard([[who, e.k]], e.name, e.parts); });
+    h += `<button class="btn ghost wide" data-act="addex:${who}">+ Exercise (this workout only)</button>`;
     h += `<p class="note" style="margin-top:10px">Grey numbers are last time. ▲ beat it, = matched, ▼ under. Empty sets are dropped when you save.</p>`;
-    if (editing) h += `<button class="btn danger wide" style="margin-top:16px" data-act="delsession">Delete workout</button>`;
     setTimeout(() => {
-      addBar(editing ? `<button class="btn good" data-act="saveedit">Save changes</button>`
-        : `<button class="btn" data-act="discard">Discard</button><button class="btn good" data-act="finish">${C.PROFILES.filter((p) => getDraft(p.key)).length > 1 ? "Finish both" : "Finish &amp; save"}</button>`);
-      document.querySelectorAll(".set").forEach(paintMarker);
+      addBar(`<button class="btn" data-act="discard:${who}">Discard</button><button class="btn good" data-act="finish:${who}">Finish ${esc(pname(who))}</button>`);
+      paintAll();
     });
     return h;
   },
@@ -425,33 +486,82 @@ function go(v) { view = v; render(); window.scrollTo(0, 0); }
 
 /* ---------------- workout editing ---------------- */
 function partner(k = profile) { return C.PROFILES.find((p) => p.key !== k).key; }
-/* Each person keeps their own scroll spot while flipping between them mid-workout. */
+/* Each tab (Gav / Both / Bethany) keeps its own scroll spot while flipping mid-workout. */
 const scrollAt = {};
-function keepScrollFor(k) {
-  view = { name: "workout" }; render(); window.scrollTo(0, scrollAt[k] || 0);
+function showWho(k) {
+  if (k !== "both") { profile = k; LS.set("lift.profile", k); doc(k); }
+  view = { name: "workout", who: k }; render(); window.scrollTo(0, scrollAt[k] || 0);
 }
-window.addEventListener("scroll", () => { if (view.name === "workout") scrollAt[profile] = window.scrollY; }, { passive: true });
-function curDraft() { return editSess || getDraft(); }
-function storeDraft(dr) { if (editSess) editSess = dr; else putDraft(dr); }
+window.addEventListener("scroll", () => { if (view.name === "workout") scrollAt[view.who || profile] = window.scrollY; }, { passive: true });
+/* One exercise card. people = [[who, ref]]: ref is an entry key in the open workout, or "#<index>" when
+   editing a saved session from History. With two people, each gets a labelled block. */
+function entryOf(who, ref) {
+  if (ref.startsWith("#")) return { e: editSess.entries[+ref.slice(1)], d: editSess, live: false };
+  const d = getDraft(who); return { e: d && d.entries.find((x) => x.k === ref), d, live: true };
+}
+function exCard(people, name, parts) {
+  let h = `<div class="card"><div class="exname">${esc(name)}${parts ? `<span class="pill">${parts.length}-way</span>` : ""}</div>`;
+  const multi = people.length > 1;
+  people.forEach(([who, ref], pi0) => {
+    const { e, d, live } = entryOf(who, ref); if (!e) return;
+    const last = C.lastFor(doc(who), e.name, d.id, live ? null : d.date);
+    const ls = last ? last.entry.sets : [];
+    const p = e.parts, sets = live ? C.visibleSets(e) : e.sets;
+    if (multi) h += `<div class="who${pi0 ? " sep" : ""}">${esc(pname(who))}</div>`;
+    h += `<div class="last">${last ? "Last " + lastLine(last.entry, last.date) : "First time — no history"}</div>
+      <div class="hdr"><span>Set</span><span style="text-align:center">lb</span><span style="text-align:center">Reps${p ? " each" : ""}</span><span></span></div>`;
+    sets.forEach((s, si) => {
+      const l = ls[si];
+      // live rows resolve by data-d/k/s; data-ei/si are position labels only (tests, styling)
+      const addr = live ? `data-d="${d.id}" data-k="${esc(e.k)}" data-s="${esc(s.id)}" data-ei="${d.entries.indexOf(e)}" data-si="${si}"` : `data-ei="${ref.slice(1)}" data-si="${si}"`;
+      h += `<div class="set" data-who="${who}" ${addr}><span class="sn">${si + 1}</span>
+        <input class="num w" inputmode="decimal" value="${s.w ?? ""}" placeholder="${l ? esc(C.fmtW(l.w)) : "lb"}" aria-label="${esc(pname(who))} weight set ${si + 1}">`;
+      if (p) {
+        h += `<div class="parts" style="--n:${p.length}">${p.map((pt, pi) =>
+          `<label>${si === 0 ? esc(pt.slice(0, 5)) : ""}<input class="num r" data-pi="${pi}" inputmode="numeric" pattern="[0-9]*" value="${s.reps[pi] ?? ""}" placeholder="${l && l.reps[pi] != null ? l.reps[pi] : ""}" aria-label="${esc(pname(who))} ${esc(pt)} reps set ${si + 1}"></label>`).join("")}</div>`;
+      } else {
+        h += `<input class="num r" data-pi="0" inputmode="numeric" pattern="[0-9]*" value="${s.reps[0] ?? ""}" placeholder="${l ? l.reps[0] : "reps"}" aria-label="${esc(pname(who))} reps set ${si + 1}">`;
+      }
+      h += `<span class="mk"></span></div>`;
+    });
+    h += `<div class="setbtns"><button class="btn sm" data-act="addset:${who}:${esc(ref)}">+ Set</button>${sets.length > 1 ? `<button class="btn sm" data-act="delset:${who}:${esc(ref)}">− Set</button>` : ""}</div>`;
+  });
+  return h + `</div>`;
+}
+/* Resolve a set row to its data by id (never by position), so a background sync can't redirect typing. */
+function rowCtx(row) {
+  const who = row.dataset.who;
+  if (row.dataset.s) {
+    const { d, e, s } = findSet(who, row.dataset.d, row.dataset.k, row.dataset.s); if (!s) return null;
+    const list = C.visibleSets(e); return { who, d, e, s, list, idx: list.indexOf(s), live: true };
+  }
+  if (!editSess) return null;
+  const e = editSess.entries[+row.dataset.ei]; if (!e) return null;
+  return { who, d: editSess, e, s: e.sets[+row.dataset.si], list: e.sets, idx: +row.dataset.si, live: false };
+}
+function paintAll() { document.querySelectorAll(".set").forEach(paintMarker); }
 function paintMarker(row) {
-  const dr = curDraft(); if (!dr) return;
-  const ei = +row.dataset.ei, si = +row.dataset.si, e = dr.entries[ei];
-  const last = C.lastFor(doc(), e.name, dr.id, editSess ? dr.date : null);
-  const r = C.compareSet(e.sets[si], last && last.entry.sets[si]);
+  const c = rowCtx(row); if (!c || !c.s) return;
+  const last = C.lastFor(doc(c.who), c.e.name, c.d.id, c.live ? null : c.d.date);
+  const r = C.compareSet(c.s, last && last.entry.sets[c.idx]);
   const mk = $(".mk", row);
   mk.className = "mk " + (r || ""); mk.textContent = { up: "▲", down: "▼", same: "=" }[r] || "";
+}
+function rowFor(c, s) {
+  return document.querySelector(`.set[data-who="${c.who}"][data-d="${CSS.escape(c.d.id)}"][data-k="${CSS.escape(c.e.k)}"][data-s="${CSS.escape(s.id)}"]`);
 }
 
 document.addEventListener("input", (ev) => {
   const t = ev.target;
   if (view.name === "workout") {
-    const dr = curDraft();
-    if (t.dataset.f === "date") { if (t.value) { dr.date = new Date(t.value + "T12:00:00").toISOString(); storeDraft(dr); } return; }
-    const row = t.closest(".set"); if (!row || !dr) return;
-    const s = dr.entries[+row.dataset.ei].sets[+row.dataset.si];
-    if (t.classList.contains("w")) s.w = C.parseNum(t.value);
-    else if (t.classList.contains("r")) { const n = C.parseNum(t.value); s.reps[+t.dataset.pi] = n === null ? null : Math.max(0, Math.round(n)); }
-    storeDraft(dr); paintMarker(row);
+    if (t.dataset.f === "date") { if (t.value && editSess) editSess.date = new Date(t.value + "T12:00:00").toISOString(); return; }
+    const row = t.closest(".set"); if (!row) return;
+    const c = rowCtx(row); if (!c) return;
+    const isW = t.classList.contains("w"), n = C.parseNum(t.value);
+    const v = isW ? n : n === null ? null : Math.max(0, Math.round(n)), i = +t.dataset.pi;
+    if (c.live) mutate(() => { if (isW) C.editW(c.s, v, Date.now()); else C.editRep(c.s, i, v, Date.now()); }, c.who);
+    else if (isW) c.s.w = v; else c.s.reps[i] = v;
+    paintMarker(row);
   } else if (view.name === "edit") {
     const f = t.dataset.f; if (!f) return;
     if (f === "name") { ed.name = t.value; return; }
@@ -470,18 +580,22 @@ document.addEventListener("focusin", (ev) => {
 document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (view.name !== "workout" || !t.classList.contains("w")) return;
-  const row = t.closest(".set"), dr = curDraft();
-  const ei = +row.dataset.ei, si = +row.dataset.si, sets = dr.entries[ei].sets, w = sets[si].w;
-  const was = focusW; focusW = w;
-  if (w === null || dr.entries[ei].wmode === "diff") { storeDraft(dr); return; }
-  for (let j = si + 1; j < sets.length; j++) {
-    const sj = sets[j];
+  const row = t.closest(".set"); if (!row) return;
+  const c = rowCtx(row); if (!c) return;
+  const w = c.s.w, was = focusW; focusW = w;
+  if (w === null || c.e.wmode === "diff") return;
+  const later = c.list.slice(c.idx + 1), moved = [];
+  for (const sj of later) {
     if (C.setFilled(sj) || !(sj.w === null || sj.w === was)) break;
-    sj.w = w;
-    const inp = $(`.set[data-ei="${ei}"][data-si="${j}"] .w`); if (inp) inp.value = w;
+    moved.push(sj);
   }
-  storeDraft(dr);
-  document.querySelectorAll(`.set[data-ei="${ei}"]`).forEach(paintMarker);
+  if (!moved.length) return;
+  const apply = () => { const now = Date.now(); for (const sj of moved) if (c.live) C.editW(sj, w, now); else sj.w = w; };
+  if (c.live) mutate(apply, c.who); else apply();
+  for (const sj of moved) {
+    const r = c.live ? rowFor(c, sj) : document.querySelector(`.set[data-ei="${row.dataset.ei}"][data-si="${c.list.indexOf(sj)}"]`);
+    if (r) { $(".w", r).value = w; paintMarker(r); }
+  }
 });
 
 /* ---------------- actions ---------------- */
@@ -523,84 +637,105 @@ const ACTIONS = {
     mutate((d) => { const r = d.routines.find((x) => x.id === ed.id); if (r) { r.deleted = true; r.updatedAt = Date.now(); } });
     go({ name: "home", tab: "routines" });
   },
-  start: (id) => {
+  start: async (id) => {
+    await preSync([profile]);
     const r = doc().routines.find((x) => x.id === id), dr = getDraft();
-    if (dr && dr.routineId === id) { go({ name: "workout" }); return; }
-    if (dr && !confirm(`Discard the ${dr.routineName} workout in progress?`)) return;
     editSess = null;
-    putDraft(C.newDraft(doc(), r, new Date().toISOString()));
-    go({ name: "workout" });
+    if (dr && dr.routineId === id) { showWho(profile); return; }
+    if (dr && !confirm(`Discard ${pname(profile)}'s ${dr.routineName} workout in progress?`)) return;
+    if (dr) endWorkout(profile, dr.id, "discarded");
+    newWorkout(profile, r);
+    showWho(profile);
   },
-  resume: (k) => { editSess = null; if (k) { profile = k; LS.set("lift.profile", k); } go({ name: "workout" }); },
-  wprof: (k) => { profile = k; LS.set("lift.profile", k); doc(k); sync(k); keepScrollFor(k); },
-  join: (id) => {
-    const r = doc().routines.find((x) => x.id === id);
-    putDraft(C.newDraft(doc(), r, new Date().toISOString())); go({ name: "workout" });
+  resume: (k) => { editSess = null; showWho(C.PROFILES.every((p) => getDraft(p.key)) ? "both" : k || profile); },
+  wprof: (k) => { showWho(k); if (k !== "both") sync(k); },
+  wpick: (arg) => { const [who, id] = arg.split(":"); pick[who] = id; showWho(who); },
+  wdiscard: (arg) => {
+    const [who, id] = arg.split(":"), d = doc(who).drafts[id];
+    if (!confirm(`Discard ${pname(who)}'s other open ${d.routineName} workout?`)) return;
+    endWorkout(who, id, "discarded"); keepScroll(render);
   },
-  together: (id) => {
-    const me = profile, other = partner(), r = doc(me).routines.find((x) => x.id === id);
-    const mine = getDraft(me), theirs = getDraft(other);
-    if (mine && mine.routineId !== id && !confirm(`Discard ${pname(me)}'s ${mine.routineName} workout in progress?`)) return;
-    if (!mine || mine.routineId !== id) putDraft(C.newDraft(doc(me), r, new Date().toISOString()), me);
-    if (!theirs) {
-      const match = C.liveRoutines(doc(other)).find((x) => C.normName(x.name) === C.normName(r.name));
-      if (match) putDraft(C.newDraft(doc(other), match, new Date().toISOString()), other);
+  join: async (arg) => {
+    const [who, id] = arg.split(":");
+    await preSync([who]);
+    if (!getDraft(who)) newWorkout(who, doc(who).routines.find((x) => x.id === id));
+    showWho("both");
+  },
+  together: async (id) => {
+    const me = profile, other = partner();
+    await preSync([me, other]);
+    const r = doc(me).routines.find((x) => x.id === id), mine = getDraft(me);
+    editSess = null;
+    if (mine && mine.routineId !== id) {
+      if (!confirm(`Discard ${pname(me)}'s ${mine.routineName} workout in progress?`)) return;
+      endWorkout(me, mine.id, "discarded");
     }
-    editSess = null; go({ name: "workout" });
+    if (!getDraft(me)) newWorkout(me, r);
+    if (!getDraft(other)) {
+      const match = C.liveRoutines(doc(other)).find((x) => C.normName(x.name) === C.normName(r.name));
+      if (match) newWorkout(other, match);
+    }
+    showWho(getDraft(other) ? "both" : me);
   },
-  addset: (ei) => {
-    const dr = curDraft(), e = dr.entries[+ei], prev = e.sets[e.sets.length - 1];
-    e.sets.push({ w: prev && e.wmode !== "diff" ? prev.w : null, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
-    storeDraft(dr); keepScroll(render);
+  addset: (arg) => {
+    const [who, ref] = arg.split(":"), { e, live } = entryOf(who, ref); if (!e) return;
+    const vis = live ? C.visibleSets(e) : e.sets, prev = vis[vis.length - 1];
+    const w = prev && e.wmode !== "diff" ? prev.w ?? null : null;
+    if (live) mutate(() => C.addSet(e, w, Date.now()), who);
+    else e.sets.push({ w, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
+    keepScroll(render);
   },
-  delset: (ei) => {
-    const dr = curDraft(), e = dr.entries[+ei];
-    const lastSet = e.sets[e.sets.length - 1];
+  delset: (arg) => {
+    const [who, ref] = arg.split(":"), { e, live } = entryOf(who, ref); if (!e) return;
+    const vis = live ? C.visibleSets(e) : e.sets, lastSet = vis[vis.length - 1]; if (!lastSet || vis.length < 2) return;
     if (C.setFilled(lastSet) && !confirm("Remove the last set? It has reps entered.")) return;
-    e.sets.pop(); storeDraft(dr); keepScroll(render);
+    if (live) mutate(() => C.delSet(lastSet, Date.now()), who); else e.sets.pop();
+    keepScroll(render);
   },
-  addex: () => {
+  addex: (who) => {
     const name = (prompt("Exercise name") || "").trim(); if (!name) return;
-    const dr = curDraft(), last = C.lastFor(doc(), name, dr.id);
+    const d = editSess || getDraft(who), last = C.lastFor(doc(who), name, d.id);
     const parts = last ? last.entry.parts || null : null, n = parts ? parts.length : 1;
-    const sets = last ? last.entry.sets.map((s) => ({ w: s.w, reps: new Array(n).fill(null) })) : [0, 1, 2].map(() => ({ w: null, reps: [null] }));
-    dr.entries.push({ exId: null, name, parts, sets }); storeDraft(dr); keepScroll(render);
+    const ws = last ? last.entry.sets.map((x) => x.w ?? null) : [null, null, null];
+    if (editSess) editSess.entries.push({ exId: null, name, parts, sets: ws.map((w) => ({ w, reps: new Array(n).fill(null) })) });
+    else mutate(() => {
+      const now = Date.now(), e = { k: "x" + C.uid(), ord: now, exId: null, name, parts, wmode: "same", sets: [] };
+      ws.forEach((w, i) => C.addSet(e, w, now + i));
+      d.entries.push(e);
+    }, who);
+    keepScroll(render);
   },
-  finish: () => {
-    const live = C.PROFILES.filter((p) => getDraft(p.key));
+  finish: (which) => {
+    const targets = which === "both" ? C.PROFILES.filter((p) => getDraft(p.key)) : C.PROFILES.filter((p) => p.key === which && getDraft(p.key));
     const done = [], empty = [];
-    for (const p of live) {
-      const sess = C.finalizeDraft(getDraft(p.key), Date.now());
-      if (!sess.entries.length) { empty.push(p); continue; }
+    for (const p of targets) {
+      const d = getDraft(p.key);
       let up = 0, total = 0;
-      for (const e of sess.entries) {
-        const last = C.lastFor(doc(p.key), e.name, sess.id);
-        e.sets.forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
+      for (const e of d.entries) {
+        const last = C.lastFor(doc(p.key), e.name, d.id);
+        C.visibleSets(e).filter(C.setFilled).forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
       }
-      mutate((d) => d.sessions.push(sess), p.key);
-      putDraft(null, p.key);
+      if (!total) { empty.push(p); continue; }
+      endWorkout(p.key, d.id, "finished");
       done.push(`${p.name} ${total} set${total === 1 ? "" : "s"}${up ? `, beat ${up}` : ""}`);
     }
     if (!done.length) {
-      if (confirm("Nothing entered. Discard this workout?")) { for (const p of empty) putDraft(null, p.key); go({ name: "home", tab: "routines" }); }
+      const names = empty.map((p) => p.name).join(" and ");
+      if (confirm(`Nothing entered for ${names}. Discard?`)) { for (const p of empty) endWorkout(p.key, getDraft(p.key).id, "discarded"); afterEnd(); }
       return;
     }
-    // a person with nothing entered keeps their draft, so nothing is thrown away silently
+    // a person with nothing entered keeps their workout open, so nothing is thrown away silently
     toast("Saved · " + done.join(" · ") + (empty.length ? ` · ${empty.map((p) => p.name).join(", ")} still open` : ""));
-    if (empty.length) { profile = empty[0].key; LS.set("lift.profile", profile); go({ name: "workout" }); }
-    else go({ name: "home", tab: "history" });
+    afterEnd(true);
   },
-  discard: () => {
-    if (!confirm(`Discard ${pname(profile)}'s workout? Nothing of theirs will be saved.`)) return;
-    putDraft(null);
-    const other = C.PROFILES.find((p) => getDraft(p.key));
-    if (other) { profile = other.key; LS.set("lift.profile", profile); go({ name: "workout" }); }
-    else go({ name: "home", tab: "routines" });
+  discard: (who) => {
+    if (!confirm(`Discard ${pname(who)}'s workout? Nothing of theirs will be saved.`)) return;
+    endWorkout(who, getDraft(who).id, "discarded"); afterEnd();
   },
   opensession: (id) => { const s = doc().sessions.find((x) => x.id === id); editSess = JSON.parse(JSON.stringify(s)); go({ name: "workout" }); },
   canceledit2: () => { editSess = null; go({ name: "home", tab: "history" }); },
   saveedit: () => {
-    const sess = C.finalizeDraft(editSess, Date.now());
+    const sess = { ...C.finalizeDraft(editSess, Date.now()), edited: true };
     mutate((d) => { const i = d.sessions.findIndex((x) => x.id === sess.id); d.sessions[i] = sess; });
     editSess = null; toast("Saved"); go({ name: "home", tab: "history" });
   },
@@ -637,6 +772,10 @@ const ACTIONS = {
   },
   import: () => $("#importfile").click(),
 };
+function afterEnd(saved) {
+  const left = C.PROFILES.find((p) => getDraft(p.key));
+  if (left) showWho(left.key); else go({ name: "home", tab: saved ? "history" : "routines" });
+}
 function keepScroll(fn) { const y = window.scrollY; fn(); window.scrollTo(0, y); }
 
 document.addEventListener("click", (ev) => {
@@ -658,8 +797,8 @@ document.addEventListener("change", async (ev) => {
   } catch (e) { toast("Couldn't read that file"); }
 });
 
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") sync(profile); });
-window.addEventListener("online", () => { for (const p of C.PROFILES) if (LS.get("lift.dirty." + p.key, false)) sync(p.key); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") for (const p of C.PROFILES) sync(p.key); });
+window.addEventListener("online", () => { for (const p of C.PROFILES) sync(p.key); });
 
 render();
 for (const p of C.PROFILES) sync(p.key);
