@@ -250,8 +250,11 @@ const VIEWS = {
     let h = topbar("", "Lift");
     h += `<div class="seg">${C.PROFILES.map((p) => `<button data-act="prof:${p.key}" class="${p.key === profile ? "on" : ""}">${p.name}</button>`).join("")}</div>`;
     if (!cfg.token) h += `<div class="banner warn"><b>Saving on this phone only. Set up sync in ⚙︎ so you can see each other's workouts.</b></div>`;
-    const dr = getDraft();
-    if (dr) h += `<div class="banner"><b>${esc(dr.routineName)} in progress</b><button class="btn pri sm" data-act="resume">Resume</button></div>`;
+    const live = C.PROFILES.filter((p) => getDraft(p.key));
+    if (live.length) {
+      const who = live.map((p) => `${p.name}: ${esc(getDraft(p.key).routineName)}`).join(" · ");
+      h += `<div class="banner"><b>In progress — ${who}</b><button class="btn pri sm" data-act="resume:${live.some((p) => p.key === profile) ? profile : live[0].key}">Resume</button></div>`;
+    }
     h += `<div class="tabs"><button data-act="tab:routines" class="${view.tab !== "history" ? "on" : ""}">Routines</button>
       <button data-act="tab:history" class="${view.tab === "history" ? "on" : ""}">History</button></div>`;
     if (view.tab === "history") return h + historyList(d);
@@ -272,8 +275,9 @@ const VIEWS = {
     if (!r) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
     let h = topbar(backBtn("home"), esc(r.name), true);
     h += `<div class="sub" style="margin:-6px 0 12px">${esc(pname(profile))}</div>`;
-    h += `<div class="row" style="margin-bottom:12px"><button class="btn pri grow" data-act="start:${r.id}">Start workout</button>
-      <button class="btn" data-act="editroutine:${r.id}">Edit</button></div>`;
+    h += `<div class="row" style="margin-bottom:8px"><button class="btn pri grow" data-act="start:${r.id}">Start workout</button>
+      <button class="btn" data-act="editroutine:${r.id}">Edit</button></div>
+      <button class="btn wide" style="margin-bottom:12px" data-act="together:${r.id}">Start together with ${esc(pname(partner()))}</button>`;
     if (!r.exercises.length) h += `<div class="empty">No exercises. Tap Edit to add some.</div>`;
     for (const ex of r.exercises) {
       const last = C.lastFor(d, ex.name);
@@ -295,11 +299,12 @@ const VIEWS = {
           <button class="tiny" data-act="delrow:${i}" aria-label="Remove">✕</button></div>
         <div class="row"><input class="txt grow" data-f="parts" value="${esc((ex.parts || []).join(", "))}" placeholder="Directions" autocomplete="off">
           <button class="btn sm" data-act="fourway:${i}">4-way</button>
+          <button class="btn sm" data-act="wmode:${i}" title="Weight default">${ex.wmode === "diff" ? "Diff wt" : "Same wt"}</button>
           <input class="txt mini" data-f="sets" inputmode="numeric" pattern="[0-9]*" value="${ex.sets ?? 3}" aria-label="Default sets"><span class="sub" style="margin:0">sets</span></div>
       </div>`;
     });
     h += `<button class="btn ghost wide" data-act="addrow">+ Add exercise</button>`;
-    h += `<p class="note" style="margin-top:12px">Directions split one exercise into parts that share a weight but get their own reps (e.g. 4-way neck: Front, Left, Right, Back). Sets = how many rows a first-ever workout starts with; after that it copies last time.</p>`;
+    h += `<p class="note" style="margin-top:12px">Same wt: a weight typed in a set copies into the empty sets below it. Diff wt: each set takes its own weight (descending). Directions split one exercise into parts that share a weight but get their own reps (e.g. 4-way neck: Front, Left, Right, Back). Sets = how many rows a first-ever workout starts with; after that it copies last time.</p>`;
     if (!ed.isNew) h += `<button class="btn danger wide" style="margin-top:16px" data-act="delroutine">Delete routine</button>`;
     const names = new Set();
     for (const r of doc().routines) if (!r.deleted) r.exercises.forEach((e) => names.add(e.name));
@@ -312,9 +317,22 @@ const VIEWS = {
   workout() {
     const editing = !!editSess;
     const dr = editing ? editSess : getDraft();
-    if (!dr) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
+    const anyLive = C.PROFILES.some((p) => getDraft(p.key));
+    if (!dr && (editing || !anyLive)) { view = { name: "home", tab: "routines" }; return VIEWS.home(); }
     const d = doc();
-    let h = topbar(editing ? `<button class="back" data-act="canceledit2">Cancel</button>` : backBtn("home"), esc(dr.routineName), true);
+    let h = topbar(editing ? `<button class="back" data-act="canceledit2">Cancel</button>` : backBtn("home"), esc(dr ? dr.routineName : "Workout"), true);
+    if (!editing) {
+      h += `<div class="seg">${C.PROFILES.map((p) => `<button data-act="wprof:${p.key}" class="${p.key === profile ? "on" : ""}">${p.name}${getDraft(p.key) ? "" : " +"}</button>`).join("")}</div>`;
+    }
+    if (!dr) {
+      const other = C.PROFILES.find((p) => p.key !== profile && getDraft(p.key));
+      const want = other ? C.normName(getDraft(other.key).routineName) : "";
+      const rs = C.liveRoutines(d).sort((a, b) => (C.normName(b.name) === want) - (C.normName(a.name) === want));
+      h += `<p class="note" style="margin-bottom:10px">${esc(pname(profile))} isn't in this workout. Pick a routine to join; ${other ? esc(other.name) + "'s sets stay as they are." : ""}</p>`;
+      h += rs.map((r) => `<button class="card rcard" data-act="join:${r.id}"><div class="nm">${esc(r.name)}</div><div class="sub">${r.exercises.length} exercises${C.normName(r.name) === want ? " · same as " + esc(other.name) : ""}</div></button>`).join("");
+      setTimeout(() => addBar(`<button class="btn" data-act="wprof:${other.key}">Back to ${esc(other.name)}</button>`));
+      return h;
+    }
     h += `<div class="row sub" style="margin:-6px 0 12px">${esc(pname(profile))} · ${editing
       ? `<input type="date" class="txt" style="width:auto;padding:4px 8px;font-size:14px" data-f="date" value="${isoToLocalDay(dr.date)}">`
       : esc(fmtDate(dr.date))}</div>`;
@@ -344,7 +362,7 @@ const VIEWS = {
     if (editing) h += `<button class="btn danger wide" style="margin-top:16px" data-act="delsession">Delete workout</button>`;
     setTimeout(() => {
       addBar(editing ? `<button class="btn good" data-act="saveedit">Save changes</button>`
-        : `<button class="btn" data-act="discard">Discard</button><button class="btn good" data-act="finish">Finish &amp; save</button>`);
+        : `<button class="btn" data-act="discard">Discard</button><button class="btn good" data-act="finish">${C.PROFILES.filter((p) => getDraft(p.key)).length > 1 ? "Finish both" : "Finish &amp; save"}</button>`);
       document.querySelectorAll(".set").forEach(paintMarker);
     });
     return h;
@@ -406,6 +424,13 @@ function isoToLocalDay(iso) {
 function go(v) { view = v; render(); window.scrollTo(0, 0); }
 
 /* ---------------- workout editing ---------------- */
+function partner(k = profile) { return C.PROFILES.find((p) => p.key !== k).key; }
+/* Each person keeps their own scroll spot while flipping between them mid-workout. */
+const scrollAt = {};
+function keepScrollFor(k) {
+  view = { name: "workout" }; render(); window.scrollTo(0, scrollAt[k] || 0);
+}
+window.addEventListener("scroll", () => { if (view.name === "workout") scrollAt[profile] = window.scrollY; }, { passive: true });
 function curDraft() { return editSess || getDraft(); }
 function storeDraft(dr) { if (editSess) editSess = dr; else putDraft(dr); }
 function paintMarker(row) {
@@ -448,7 +473,7 @@ document.addEventListener("change", (ev) => {
   const row = t.closest(".set"), dr = curDraft();
   const ei = +row.dataset.ei, si = +row.dataset.si, sets = dr.entries[ei].sets, w = sets[si].w;
   const was = focusW; focusW = w;
-  if (w === null) return;
+  if (w === null || dr.entries[ei].wmode === "diff") { storeDraft(dr); return; }
   for (let j = si + 1; j < sets.length; j++) {
     const sj = sets[j];
     if (C.setFilled(sj) || !(sj.w === null || sj.w === was)) break;
@@ -474,13 +499,16 @@ const ACTIONS = {
   delrow: (i) => { ed.exercises.splice(+i, 1); render(); },
   up: (i) => { i = +i; if (i > 0) [ed.exercises[i - 1], ed.exercises[i]] = [ed.exercises[i], ed.exercises[i - 1]]; render(); },
   down: (i) => { i = +i; if (i < ed.exercises.length - 1) [ed.exercises[i + 1], ed.exercises[i]] = [ed.exercises[i], ed.exercises[i + 1]]; render(); },
+  wmode: (i) => { const ex = ed.exercises[+i]; ex.wmode = ex.wmode === "diff" ? "same" : "diff"; render(); },
   fourway: (i) => { const ex = ed.exercises[+i]; ex.parts = ["Front", "Left", "Right", "Back"]; if (!ex.sets || ex.sets === 3) ex.sets = 2; render(); },
   saveroutine: () => {
     const name = ed.name.trim();
     if (!name) { toast("Give the routine a name"); return; }
     const exercises = ed.exercises.filter((e) => e.name.trim()).map((e) => {
       const o = { id: e.id, name: e.name.trim(), sets: e.sets || 3 };
-      if (e.parts && e.parts.length) o.parts = e.parts; return o;
+      if (e.parts && e.parts.length) o.parts = e.parts;
+      if (e.wmode === "diff") o.wmode = "diff";
+      return o;
     });
     mutate((d) => {
       const old = d.routines.find((r) => r.id === ed.id);
@@ -503,10 +531,26 @@ const ACTIONS = {
     putDraft(C.newDraft(doc(), r, new Date().toISOString()));
     go({ name: "workout" });
   },
-  resume: () => { editSess = null; go({ name: "workout" }); },
+  resume: (k) => { editSess = null; if (k) { profile = k; LS.set("lift.profile", k); } go({ name: "workout" }); },
+  wprof: (k) => { profile = k; LS.set("lift.profile", k); doc(k); sync(k); keepScrollFor(k); },
+  join: (id) => {
+    const r = doc().routines.find((x) => x.id === id);
+    putDraft(C.newDraft(doc(), r, new Date().toISOString())); go({ name: "workout" });
+  },
+  together: (id) => {
+    const me = profile, other = partner(), r = doc(me).routines.find((x) => x.id === id);
+    const mine = getDraft(me), theirs = getDraft(other);
+    if (mine && mine.routineId !== id && !confirm(`Discard ${pname(me)}'s ${mine.routineName} workout in progress?`)) return;
+    if (!mine || mine.routineId !== id) putDraft(C.newDraft(doc(me), r, new Date().toISOString()), me);
+    if (!theirs) {
+      const match = C.liveRoutines(doc(other)).find((x) => C.normName(x.name) === C.normName(r.name));
+      if (match) putDraft(C.newDraft(doc(other), match, new Date().toISOString()), other);
+    }
+    editSess = null; go({ name: "workout" });
+  },
   addset: (ei) => {
     const dr = curDraft(), e = dr.entries[+ei], prev = e.sets[e.sets.length - 1];
-    e.sets.push({ w: prev ? prev.w : null, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
+    e.sets.push({ w: prev && e.wmode !== "diff" ? prev.w : null, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
     storeDraft(dr); keepScroll(render);
   },
   delset: (ei) => {
@@ -523,19 +567,36 @@ const ACTIONS = {
     dr.entries.push({ exId: null, name, parts, sets }); storeDraft(dr); keepScroll(render);
   },
   finish: () => {
-    const dr = getDraft(), sess = C.finalizeDraft(dr, Date.now());
-    if (!sess.entries.length) { if (confirm("Nothing entered. Discard this workout?")) { putDraft(null); go({ name: "home", tab: "routines" }); } return; }
-    let up = 0, total = 0;
-    for (const e of sess.entries) {
-      const last = C.lastFor(doc(), e.name, sess.id);
-      e.sets.forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
+    const live = C.PROFILES.filter((p) => getDraft(p.key));
+    const done = [], empty = [];
+    for (const p of live) {
+      const sess = C.finalizeDraft(getDraft(p.key), Date.now());
+      if (!sess.entries.length) { empty.push(p); continue; }
+      let up = 0, total = 0;
+      for (const e of sess.entries) {
+        const last = C.lastFor(doc(p.key), e.name, sess.id);
+        e.sets.forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
+      }
+      mutate((d) => d.sessions.push(sess), p.key);
+      putDraft(null, p.key);
+      done.push(`${p.name} ${total} set${total === 1 ? "" : "s"}${up ? `, beat ${up}` : ""}`);
     }
-    mutate((d) => d.sessions.push(sess));
-    putDraft(null);
-    toast(`Saved · ${total} set${total === 1 ? "" : "s"}${up ? ` · beat ${up}` : ""}`);
-    go({ name: "home", tab: "history" });
+    if (!done.length) {
+      if (confirm("Nothing entered. Discard this workout?")) { for (const p of empty) putDraft(null, p.key); go({ name: "home", tab: "routines" }); }
+      return;
+    }
+    // a person with nothing entered keeps their draft, so nothing is thrown away silently
+    toast("Saved · " + done.join(" · ") + (empty.length ? ` · ${empty.map((p) => p.name).join(", ")} still open` : ""));
+    if (empty.length) { profile = empty[0].key; LS.set("lift.profile", profile); go({ name: "workout" }); }
+    else go({ name: "home", tab: "history" });
   },
-  discard: () => { if (!confirm("Discard this workout? Nothing will be saved.")) return; putDraft(null); go({ name: "home", tab: "routines" }); },
+  discard: () => {
+    if (!confirm(`Discard ${pname(profile)}'s workout? Nothing of theirs will be saved.`)) return;
+    putDraft(null);
+    const other = C.PROFILES.find((p) => getDraft(p.key));
+    if (other) { profile = other.key; LS.set("lift.profile", profile); go({ name: "workout" }); }
+    else go({ name: "home", tab: "routines" });
+  },
   opensession: (id) => { const s = doc().sessions.find((x) => x.id === id); editSess = JSON.parse(JSON.stringify(s)); go({ name: "workout" }); },
   canceledit2: () => { editSess = null; go({ name: "home", tab: "history" }); },
   saveedit: () => {

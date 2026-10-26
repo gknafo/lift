@@ -153,3 +153,11 @@ test("lastFor beforeIso: editing an old workout compares to the one before it", 
   assert.equal(C.lastFor(doc, "Row", "b", "2026-10-05T10:00:00Z").entry.sets[0].w, 100);
   assert.equal(C.lastFor(doc, "Row", "a", "2026-10-01T10:00:00Z"), null);
 });
+
+test("newDraft carries wmode; default same", () => {
+  const d = C.newDraft(C.emptyDoc(), { id: "l", name: "Legs", exercises: [
+    { id: "a", name: "Adductor Machine", sets: 2, wmode: "diff" }, { id: "c", name: "Calf Press", sets: 2 }] }, "2026-10-26T12:00:00Z");
+  assert.equal(d.entries[0].wmode, "diff");
+  assert.equal(d.entries[1].wmode, "same");
+  assert.equal(C.finalizeDraft({ ...d, entries: [{ ...d.entries[0], sets: [{ w: 90, reps: [10] }] }] }, 1).entries[0].wmode, undefined, "sessions don't store wmode");
+});

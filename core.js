@@ -134,7 +134,7 @@
         } else {
           sets = Array.from({ length: ex.sets || 3 }, () => ({ w: null, reps: new Array(n).fill(null) }));
         }
-        return { exId: ex.id, name: ex.name, parts: partsOf(ex), sets };
+        return { exId: ex.id, name: ex.name, parts: partsOf(ex), wmode: ex.wmode === "diff" ? "diff" : "same", sets };
       }),
     };
   }

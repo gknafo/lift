@@ -158,7 +158,7 @@ def test_full_flow(server):
 
         # Draft survives a reload mid-workout
         A.reload()
-        expect(A.locator(".banner", has_text="Push in progress")).to_be_visible()
+        expect(A.locator(".banner", has_text="Gav: Push")).to_be_visible()
         A.get_by_role("button", name="Resume").click()
         expect(A.locator('.set[data-ei="0"][data-si="0"] .w')).to_have_value("185")
         A.get_by_role("button", name="Finish & save").click()
