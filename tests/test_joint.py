@@ -99,7 +99,8 @@ def test_one_phone_together_then_apart(server):
         assert gl[0]["entries"][1]["sets"] == [{"w": 80, "reps": [12]}]
         assert bl[0]["entries"][0]["sets"] == [{"w": 90, "reps": [20]}]
         assert bl[0]["entries"][1]["sets"] == [{"w": 40, "reps": [15]}]
-        assert all(d["state"] == "finished" for d in g["drafts"].values()) and all(d["state"] == "finished" for d in be["drafts"].values())
+        assert all(d["state"] == "finished" for d in gh.doc("gav.live.json")["drafts"].values()) and all(d["state"] == "finished" for d in gh.doc("bethany.live.json")["drafts"].values())
+        assert "drafts" not in g and "drafts" not in be, "main files stay old-version-shaped"
         check_first_workouts(gh)
         b.close()
     assert not errors, errors
@@ -142,7 +143,7 @@ def test_two_phones_live(server):
         A.locator(".seg button", has_text="Gav").click()
         A.wait_for_timeout(1500)
         # nothing new reached GitHub while offline
-        assert [d for d in gh.doc("bethany.json")["drafts"].values() if d["state"] == "live"][0]["entries"][1]["sets"][0]["reps"] == [None]
+        assert [d for d in gh.doc("bethany.live.json")["drafts"].values() if d["state"] == "live"][0]["entries"][1]["sets"][0]["reps"] == [None]
         gh.offline.clear()
         settle(A, B, A, B)
 

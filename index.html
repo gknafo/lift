@@ -109,7 +109,10 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+    catch (e) { if (!LS.warned) { LS.warned = true; setTimeout(() => toast("Phone storage is full: this phone can't keep unsynced changes"), 0); } return false; }
+  },
   del(k) { try { localStorage.removeItem(k); } catch (e) {} },
 };
 
@@ -146,8 +149,10 @@ function mutate(fn, k = profile) {
 const pick = {};
 function getDraft(k = profile) {
   const d = doc(k), p = pick[k] && d.drafts && d.drafts[pick[k]];
-  return p && p.state === "live" ? p : C.currentDraft(d);
+  return p && C.effState(p) === "live" ? p : C.currentDraft(d);
 }
+/* Once this phone logs into a workout it stays on screen (pinned) until it ends or another is picked.
+   Before that, the copy with the most recent sets shows. Buttons always carry the exact workout id. */
 function otherOpen(k) { const cur = getDraft(k); return C.liveDrafts(doc(k)).filter((d) => !cur || d.id !== cur.id); }
 function newWorkout(k, routine) {
   const d = C.newDraft(doc(k), routine, new Date().toISOString());
@@ -179,8 +184,8 @@ function gh(path, opts = {}) {
     headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json", ...(opts.headers || {}) },
   });
 }
-async function ghGet(k) {
-  const res = await gh("/contents/" + k + ".json");
+async function ghGet(name, valid) {
+  const res = await gh("/contents/" + name);
   if (res.status === 404) return { doc: null, sha: null };
   if (!res.ok) throw Object.assign(new Error("GET " + res.status), { status: res.status });
   const j = await res.json();
@@ -188,21 +193,25 @@ async function ghGet(k) {
   if (j.encoding === "base64" && j.content) text = C.b64decode(j.content);
   else if (!j.size) text = "";
   else { // files over 1 MB come back without content; fetch raw instead
-    const r2 = await gh("/contents/" + k + ".json", { headers: { Accept: "application/vnd.github.raw+json" } });
+    const r2 = await gh("/contents/" + name, { headers: { Accept: "application/vnd.github.raw+json" } });
     if (!r2.ok) throw Object.assign(new Error("GET raw " + r2.status), { status: r2.status });
     text = await r2.text();
   }
   let d = null;
-  if (text.trim()) { d = JSON.parse(text); if (!C.validDoc(d)) throw new Error("Bad data file " + k + ".json"); }
+  if (text.trim()) { d = JSON.parse(text); if (!valid(d)) throw new Error("Bad data file " + name); }
   return { doc: d, sha: j.sha };
 }
-async function ghPut(k, d, sha) {
+async function ghPut(name, k, d, sha) {
   const body = { message: pname(k) + " · " + new Date().toISOString(), content: C.b64encode(JSON.stringify(d)) };
   if (sha) body.sha = sha;
-  const res = await gh("/contents/" + k + ".json", { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+  const res = await gh("/contents/" + name, { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
   if (!res.ok) throw Object.assign(new Error("PUT " + res.status), { status: res.status });
   return (await res.json()).content.sha;
 }
+/* Open workouts go in their own file so an old app version (which rewrites <k>.json without them) can't strip them. */
+const mainPart = (d) => ({ schema: d.schema || 1, routines: d.routines, sessions: d.sessions });
+const livePart = (d) => ({ schema: d.schema || 1, drafts: d.drafts || {} });
+const validLive = (d) => !!d && typeof d === "object" && !!d.drafts && typeof d.drafts === "object";
 const syncing = {}, again = {}, timers = {};
 function scheduleSync(k) {
   clearTimeout(timers[k]);
@@ -218,15 +227,21 @@ async function sync(k) {
   try {
     let done = false;
     for (let attempt = 0; attempt < 4 && !done; attempt++) {
-      const r = await ghGet(k);
+      const L = await ghGet(k + ".live.json", validLive);
+      const M = await ghGet(k + ".json", C.validDoc);
       const before = JSON.stringify(doc(k));
-      const merged = C.mergeDocs(doc(k), r.doc);
+      let merged = C.mergeDocs(doc(k), M.doc);
+      if (L.doc) merged = C.mergeDocs(merged, { schema: 1, routines: [], sessions: [], drafts: L.doc.drafts });
       C.pruneDrafts(merged, Date.now());
       if (JSON.stringify(merged) !== before) changed = true;
       docs[k] = merged; saveLocal(k);
-      if (r.doc && C.sameDoc(merged, r.doc)) { done = true; break; }
-      try { await ghPut(k, merged, r.sha); done = true; }
-      catch (e) { if (e.status !== 409 && e.status !== 422) throw e; }
+      const needMain = !M.doc || !C.sameDoc(mainPart(merged), mainPart(M.doc)) || !!M.doc.drafts;
+      const needLive = Object.keys(merged.drafts || {}).length && (!L.doc || C.canon(merged.drafts) !== C.canon(L.doc.drafts));
+      try {
+        if (needLive) await ghPut(k + ".live.json", k, livePart(merged), L.sha);
+        if (needMain) await ghPut(k + ".json", k, mainPart(merged), M.sha);
+        done = true;
+      } catch (e) { if (e.status !== 409 && e.status !== 422) throw e; }
     }
     if (!done) throw new Error("conflict retries exhausted");
     if ((edits[k] || 0) === e0) LS.set("lift.dirty." + k, false); // an edit made mid-sync stays dirty
@@ -376,7 +391,7 @@ const VIEWS = {
     if (editing) {
       h += `<div class="row sub" style="margin:-6px 0 12px">${esc(pname(profile))} · <input type="date" class="txt" style="width:auto;padding:4px 8px;font-size:14px" data-f="date" value="${isoToLocalDay(editSess.date)}"></div>`;
       editSess.entries.forEach((e, ei) => { h += exCard([[profile, "#" + ei]], e.name, e.parts); });
-      h += `<button class="btn ghost wide" data-act="addex:${profile}">+ Exercise</button>`;
+      h += `<button class="btn ghost wide" data-act="addex:${profile}:">+ Exercise</button>`;
       h += `<button class="btn danger wide" style="margin-top:16px" data-act="delsession">Delete workout</button>`;
       setTimeout(() => { addBar(`<button class="btn good" data-act="saveedit">Save changes</button>`); paintAll(); });
       return h;
@@ -404,7 +419,8 @@ const VIEWS = {
       for (const r of rows) h += exCard(r.row, r.name, r.parts);
       for (const p of C.PROFILES.filter((q) => !getDraft(q.key))) h += `<button class="btn wide" style="margin-bottom:10px" data-act="wprof:${p.key}">+ Add ${esc(p.name)} to this workout</button>`;
       h += `<p class="note" style="margin-top:6px">Both shows ${C.PROFILES.map((p) => p.name).join(" and ")} on each exercise. Use a name tab for the parts you do apart. Either phone can log either person.</p>`;
-      setTimeout(() => { addBar(`<button class="btn good" data-act="finish:both">Finish both</button>`); paintAll(); });
+      const ids = live.map((p) => p.key + "=" + getDraft(p.key).id).join(",");
+      setTimeout(() => { addBar(`<button class="btn good" data-act="finish:both:${ids}">Finish both</button>`); paintAll(); });
       return h;
     }
 
@@ -420,10 +436,10 @@ const VIEWS = {
     }
     h += `<div class="sub" style="margin:-4px 0 12px">${esc(pname(who))} · ${esc(fmtDate(dr.date))}</div>`;
     dr.entries.forEach((e) => { h += exCard([[who, e.k]], e.name, e.parts); });
-    h += `<button class="btn ghost wide" data-act="addex:${who}">+ Exercise (this workout only)</button>`;
+    h += `<button class="btn ghost wide" data-act="addex:${who}:${dr.id}">+ Exercise (this workout only)</button>`;
     h += `<p class="note" style="margin-top:10px">Grey numbers are last time. ▲ beat it, = matched, ▼ under. Empty sets are dropped when you save.</p>`;
     setTimeout(() => {
-      addBar(`<button class="btn" data-act="discard:${who}">Discard</button><button class="btn good" data-act="finish:${who}">Finish ${esc(pname(who))}</button>`);
+      addBar(`<button class="btn" data-act="discard:${who}:${dr.id}">Discard</button><button class="btn good" data-act="finish:${who}:${dr.id}">Finish ${esc(pname(who))}</button>`);
       paintAll();
     });
     return h;
@@ -465,7 +481,7 @@ const VIEWS = {
 };
 
 function historyList(d) {
-  const ss = C.liveSessions(d);
+  const ss = C.liveSessions(d).filter((s) => s.entries.length);
   if (!ss.length) return `<div class="empty">No workouts logged for ${esc(pname(profile))} yet.</div>`;
   return ss.map((s) => `<button class="card rcard hist" data-act="opensession:${s.id}">
       <div class="d">${esc(fmtDate(s.date))} · ${esc(s.routineName)}</div>
@@ -495,9 +511,10 @@ function showWho(k) {
 window.addEventListener("scroll", () => { if (view.name === "workout") scrollAt[view.who || profile] = window.scrollY; }, { passive: true });
 /* One exercise card. people = [[who, ref]]: ref is an entry key in the open workout, or "#<index>" when
    editing a saved session from History. With two people, each gets a labelled block. */
-function entryOf(who, ref) {
-  if (ref.startsWith("#")) return { e: editSess.entries[+ref.slice(1)], d: editSess, live: false };
-  const d = getDraft(who); return { e: d && d.entries.find((x) => x.k === ref), d, live: true };
+function entryOf(who, ref, did) {
+  if (ref.startsWith("#")) return { e: editSess && editSess.entries[+ref.slice(1)], d: editSess, live: false };
+  const d = did ? doc(who).drafts && doc(who).drafts[did] : getDraft(who);
+  return { e: d && d.entries.find((x) => x.k === ref), d, live: true };
 }
 function exCard(people, name, parts) {
   let h = `<div class="card"><div class="exname">${esc(name)}${parts ? `<span class="pill">${parts.length}-way</span>` : ""}</div>`;
@@ -524,7 +541,8 @@ function exCard(people, name, parts) {
       }
       h += `<span class="mk"></span></div>`;
     });
-    h += `<div class="setbtns"><button class="btn sm" data-act="addset:${who}:${esc(ref)}">+ Set</button>${sets.length > 1 ? `<button class="btn sm" data-act="delset:${who}:${esc(ref)}">− Set</button>` : ""}</div>`;
+    const did = live ? d.id : "-";
+    h += `<div class="setbtns"><button class="btn sm" data-act="addset:${who}:${did}:${esc(ref)}">+ Set</button>${sets.length > 1 ? `<button class="btn sm" data-act="delset:${who}:${did}:${esc(ref)}">− Set</button>` : ""}</div>`;
   });
   return h + `</div>`;
 }
@@ -559,7 +577,7 @@ document.addEventListener("input", (ev) => {
     const c = rowCtx(row); if (!c) return;
     const isW = t.classList.contains("w"), n = C.parseNum(t.value);
     const v = isW ? n : n === null ? null : Math.max(0, Math.round(n)), i = +t.dataset.pi;
-    if (c.live) mutate(() => { if (isW) C.editW(c.s, v, Date.now()); else C.editRep(c.s, i, v, Date.now()); }, c.who);
+    if (c.live) { pick[c.who] = c.d.id; mutate(() => { if (isW) C.editW(c.s, v, Date.now()); else C.editRep(c.s, i, v, Date.now()); }, c.who); }
     else if (isW) c.s.w = v; else c.s.reps[i] = v;
     paintMarker(row);
   } else if (view.name === "edit") {
@@ -678,23 +696,28 @@ const ACTIONS = {
     showWho(getDraft(other) ? "both" : me);
   },
   addset: (arg) => {
-    const [who, ref] = arg.split(":"), { e, live } = entryOf(who, ref); if (!e) return;
+    const [who, did, ref] = arg.split(":"), { e, live } = entryOf(who, ref, did === "-" ? null : did); if (!e) return;
     const vis = live ? C.visibleSets(e) : e.sets, prev = vis[vis.length - 1];
+    if (live) pick[who] = did;
     const w = prev && e.wmode !== "diff" ? prev.w ?? null : null;
     if (live) mutate(() => C.addSet(e, w, Date.now()), who);
     else e.sets.push({ w, reps: new Array(e.parts ? e.parts.length : 1).fill(null) });
     keepScroll(render);
   },
   delset: (arg) => {
-    const [who, ref] = arg.split(":"), { e, live } = entryOf(who, ref); if (!e) return;
+    const [who, did, ref] = arg.split(":"), { e, live } = entryOf(who, ref, did === "-" ? null : did); if (!e) return;
     const vis = live ? C.visibleSets(e) : e.sets, lastSet = vis[vis.length - 1]; if (!lastSet || vis.length < 2) return;
     if (C.setFilled(lastSet) && !confirm("Remove the last set? It has reps entered.")) return;
+    if (live) pick[who] = did;
     if (live) mutate(() => C.delSet(lastSet, Date.now()), who); else e.sets.pop();
     keepScroll(render);
   },
-  addex: (who) => {
+  addex: (arg) => {
+    const [who, did] = arg.split(":");
     const name = (prompt("Exercise name") || "").trim(); if (!name) return;
-    const d = editSess || getDraft(who), last = C.lastFor(doc(who), name, d.id);
+    const d = editSess || (did && doc(who).drafts[did]) || getDraft(who); if (!d) return;
+    if (!editSess) pick[who] = d.id;
+    const last = C.lastFor(doc(who), name, d.id);
     const parts = last ? last.entry.parts || null : null, n = parts ? parts.length : 1;
     const ws = last ? last.entry.sets.map((x) => x.w ?? null) : [null, null, null];
     if (editSess) editSess.entries.push({ exId: null, name, parts, sets: ws.map((w) => ({ w, reps: new Array(n).fill(null) })) });
@@ -705,32 +728,36 @@ const ACTIONS = {
     }, who);
     keepScroll(render);
   },
-  finish: (which) => {
-    const targets = which === "both" ? C.PROFILES.filter((p) => getDraft(p.key)) : C.PROFILES.filter((p) => p.key === which && getDraft(p.key));
+  finish: (arg) => {
+    // arg: "gav:<draftId>" or "both:gav=<id>,bethany=<id>" — always the workouts that were on screen
+    const [which, rest] = [arg.slice(0, arg.indexOf(":")), arg.slice(arg.indexOf(":") + 1)];
+    const targets = which === "both" ? rest.split(",").map((x) => x.split("=")) : [[which, rest]];
     const done = [], empty = [];
-    for (const p of targets) {
-      const d = getDraft(p.key);
+    for (const [who, did] of targets) {
+      const d = doc(who).drafts && doc(who).drafts[did]; if (!d) continue;
       let up = 0, total = 0;
       for (const e of d.entries) {
-        const last = C.lastFor(doc(p.key), e.name, d.id);
+        const last = C.lastFor(doc(who), e.name, d.id);
         C.visibleSets(e).filter(C.setFilled).forEach((s, i) => { total++; if (C.compareSet(s, last && last.entry.sets[i]) === "up") up++; });
       }
-      if (!total) { empty.push(p); continue; }
-      endWorkout(p.key, d.id, "finished");
-      done.push(`${p.name} ${total} set${total === 1 ? "" : "s"}${up ? `, beat ${up}` : ""}`);
+      // nothing entered here may only mean the other phone hasn't synced yet: leave it open, never discard it
+      if (!total) { empty.push(who); continue; }
+      endWorkout(who, did, "finished");
+      done.push(`${pname(who)} ${total} set${total === 1 ? "" : "s"}${up ? `, beat ${up}` : ""}`);
     }
-    if (!done.length) {
-      const names = empty.map((p) => p.name).join(" and ");
-      if (confirm(`Nothing entered for ${names}. Discard?`)) { for (const p of empty) endWorkout(p.key, getDraft(p.key).id, "discarded"); afterEnd(); }
-      return;
-    }
-    // a person with nothing entered keeps their workout open, so nothing is thrown away silently
-    toast("Saved · " + done.join(" · ") + (empty.length ? ` · ${empty.map((p) => p.name).join(", ")} still open` : ""));
+    if (!done.length) { toast(`Nothing entered for ${empty.map(pname).join(" and ")} yet`); return; }
+    toast("Saved · " + done.join(" · ") + (empty.length ? ` · ${empty.map(pname).join(", ")} still open` : ""));
     afterEnd(true);
   },
-  discard: (who) => {
-    if (!confirm(`Discard ${pname(who)}'s workout? Nothing of theirs will be saved.`)) return;
-    endWorkout(who, getDraft(who).id, "discarded"); afterEnd();
+  discard: async (arg) => {
+    const [who, did] = arg.split(":");
+    await preSync([who]); // see sets the other phone logged before deciding
+    const d = doc(who).drafts && doc(who).drafts[did]; if (!d) return;
+    const n = d.entries.reduce((a, e) => a + C.visibleSets(e).filter(C.setFilled).length, 0);
+    const msg = n ? `Discard ${pname(who)}'s workout? It has ${n} logged set${n === 1 ? "" : "s"}, which will not be saved.`
+      : `Discard ${pname(who)}'s workout?`;
+    if (!confirm(msg)) return;
+    endWorkout(who, did, "discarded"); afterEnd();
   },
   opensession: (id) => { const s = doc().sessions.find((x) => x.id === id); editSess = JSON.parse(JSON.stringify(s)); go({ name: "workout" }); },
   canceledit2: () => { editSess = null; go({ name: "home", tab: "history" }); },

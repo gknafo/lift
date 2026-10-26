@@ -23,7 +23,7 @@ def test_stale_phone_start_together_keeps_both(server):
         B.locator(".rcard", has_text="Legs").click(); B.get_by_role("button", name="Start together with Gav").click()
         settle(B)
         gh.offline.clear(); settle(A, B, A)
-        live = [d for d in gh.doc("gav.json")["drafts"].values() if d["state"] == "live"]
+        live = [d for d in gh.doc("gav.live.json")["drafts"].values() if d["state"] == "live"]
         assert len(live) == 2, len(live)
         # both phones show Gav's logged workout, and flag the empty one
         for p in (A, B):
@@ -71,16 +71,16 @@ def test_typing_survives_remote_replacement(server):
         set_row(A, 0, 0, 200, [15]); settle(A)
         on_screen = A.evaluate("getDraft('gav').id")
         # another phone starts Rest Pause Upper for Gav and logs a set (written straight into the file)
-        d = gh.doc("gav.json"); rid = "other-wk"
+        d = gh.doc("gav.live.json"); rid = "other-wk"
         d["drafts"][rid] = {"id": rid, "routineId": "rpu-gav", "routineName": "Rest Pause Upper", "date": "2026-10-26T18:00:00.000Z",
             "startedAt": 9e12, "state": "live", "entries": [{"k": "e0", "ord": 0, "exId": "rpu-0", "name": "Chest Press Machine",
             "parts": None, "wmode": "same", "sets": [{"id": "s0", "c": 0, "w": 185, "wt": 9e12, "reps": [8], "rt": [9e12]}]}]}
-        gh.n += 1; gh.files["gav.json"] = (json.dumps(d), "sha%d" % gh.n)
+        gh.n += 1; gh.files["gav.live.json"] = (json.dumps(d), "sha%d" % gh.n)
         inp = A.locator('.set[data-ei="1"][data-si="0"] .w'); inp.click()
         A.evaluate("sync('gav')"); A.wait_for_timeout(800)               # arrives mid-typing
         inp.press_sequentially("80"); A.locator('.set[data-ei="1"][data-si="0"] .r').fill("12"); A.locator('.set[data-ei="1"][data-si="0"] .r').blur()
         settle(A)
-        d = gh.doc("gav.json")["drafts"]
+        d = gh.doc("gav.live.json")["drafts"]
         assert d[on_screen]["entries"][1]["sets"][0]["w"] == 80 and d[on_screen]["entries"][1]["sets"][0]["reps"] == [12]
         assert d[rid]["entries"][0]["sets"][0]["w"] == 185 and len(d[rid]["entries"]) == 1, "other workout untouched"
         check_first_workouts(gh); b.close()
@@ -100,11 +100,55 @@ def test_old_version_draft_migrates_without_clobbering(server):
           localStorage.setItem('lift.draft.gav', JSON.stringify({id:'OLD', routineId:'rpu-gav', routineName:'Rest Pause Upper',
           date:'2026-10-22T20:00:00.000Z', entries:[{exId:'rpu-0', name:'Chest Press Machine', parts:null, sets:[{w:170,reps:[7]}]}]}))""")
         B.reload(); settle(B, A)
-        d = gh.doc("gav.json")["drafts"]
+        d = gh.doc("gav.live.json")["drafts"]
         live = {k: v for k, v in d.items() if v["state"] == "live"}
         assert "OLD" in live and len(live) == 2
         mine = [v for k, v in live.items() if k != "OLD"][0]
         assert mine["entries"][0]["sets"][0]["w"] == 150, "live workout intact"
         expect(A.locator('.set[data-ei="0"][data-si="0"] .w')).to_have_value("150")
         check_first_workouts(gh); b.close()
+    assert not errors, errors
+
+
+def test_old_version_save_cannot_strip_open_workouts(server):
+    """An old-version phone rewrites gav.json without open workouts; finished ones must not come back as live."""
+    gh = FakeGitHub(); seed(gh); errors = []
+    with sync_playwright() as pw:
+        b = pw.chromium.launch()
+        A = phone(b, gh, "A", server, errors); B = phone(b, gh, "B", server, errors)
+        setup_sync(A); setup_sync(B)
+        A.locator(".rcard", has_text="Legs").click(); A.get_by_role("button", name="Start workout").click()
+        set_row(A, 0, 0, 200, [15]); settle(A, B)                       # B now holds a live copy
+        gh.offline.add("B")
+        set_row(A, 0, 1, None, [13]); A.get_by_role("button", name="Finish Gav").click(); settle(A)
+        # old-version phone saves gav.json in its old shape (no drafts key at all)
+        main = gh.doc("gav.json"); main.pop("drafts", None); main["routines"][0]["name"] = "Rest Pause Upper"
+        gh.n += 1; gh.files["gav.json"] = (json.dumps(main), "sha%d" % gh.n)
+        gh.offline.clear(); B.reload(); settle(B, A)
+        assert not [d for d in gh.doc("gav.live.json")["drafts"].values() if d["state"] == "live"], "finished workout came back"
+        expect(B.locator(".banner:not(.warn)")).to_have_count(0)
+        s = [x for x in gh.doc("gav.json")["sessions"] if x["routineName"] == "Legs"]
+        assert len(s) == 1 and s[0]["entries"][0]["sets"] == [{"w": 200, "reps": [15]}, {"w": 200, "reps": [13]}]
+        check_first_workouts(gh); b.close()
+    assert not errors, errors
+
+
+def test_discard_warns_about_sets_from_other_phone(server):
+    gh = FakeGitHub(); seed(gh); errors = []; seen = []
+    with sync_playwright() as pw:
+        b = pw.chromium.launch()
+        A = phone(b, gh, "A", server, errors); B = phone(b, gh, "B", server, errors)
+        setup_sync(A); setup_sync(B)
+        A.locator(".rcard", has_text="Legs").click(); A.get_by_role("button", name="Start workout").click(); settle(A, B)
+        B.reload(); B.get_by_role("button", name="Resume").click()
+        set_row(B, 0, 0, 200, [15]); set_row(B, 1, 0, 80, [12]); B.locator(".r").first.blur(); settle(B)
+        def on_dialog(d): seen.append(d.message)
+        A.on("dialog", on_dialog)
+        A.get_by_role("button", name="Discard").click(); A.wait_for_timeout(4000)
+        assert any("2 logged sets" in m for m in seen), seen
+        # the harness auto-accepts dialogs, so the discard went through: it must have been informed, and the sets stay on file
+        ds = list(gh.doc("gav.live.json")["drafts"].values())
+        assert len(ds) == 1 and ds[0]["state"] == "discarded"
+        assert sum(1 for e in ds[0]["entries"] for x in e["sets"] if any(r for r in x["reps"] if r)) == 2
+        b.close()
     assert not errors, errors

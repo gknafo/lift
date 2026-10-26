@@ -49,10 +49,10 @@ test("merge: random docs — commutative (by content), idempotent, keeps every i
     assert.equal(ab.sessions.length, ids.size, "no id lost or duplicated");
     for (const s of ab.sessions) {
       const all = [...a.sessions, ...b.sessions].filter((x) => x.id === s.id);
-      const manual = all.filter((x) => x.deleted || x.edited);
+      const manual = all.filter((x) => !x.derived || x.deleted);
       const pool = manual.length ? manual : all; // a hand delete/edit beats any automatic version
       assert.equal(s.updatedAt, Math.max(...pool.map((x) => x.updatedAt)), "newest version kept");
-      if (manual.length) assert.ok(s.deleted || s.edited);
+      if (manual.length) assert.ok(!s.derived || s.deleted);
     }
   }
 });
@@ -262,7 +262,7 @@ test("F8: clock skew — a finished tombstone never kills a different workout", 
 test("History edit / delete of a session is never overwritten by its workout", () => {
   const [A, id] = docWith(1000), B = cl(A);
   log(S(A, id, 0, 0), 225, 8, 2000); finish(A, id, 3000);
-  const ed = cl(A); const s = sessOf(ed, id); s.entries[0].sets[0].reps = [9]; s.edited = true; s.updatedAt = 9000;
+  const ed = cl(A); const s = sessOf(ed, id); s.entries[0].sets[0].reps = [9]; delete s.derived; s.edited = true; s.updatedAt = 9000;
   log(S(B, id, 1, 0), 30, 12, 9500);          // late set from other phone after the edit
   assert.deepEqual(sessOf(C.mergeDocs(ed, B), id).entries[0].sets[0].reps, [9]);
   const del = cl(A); sessOf(del, id).deleted = true; sessOf(del, id).updatedAt = 9000;
@@ -281,7 +281,7 @@ test("discard on one phone + finish on the other → finished (data kept)", () =
 test("prune: old finished workouts shrink to a stub; stale full copy can't resurrect content", () => {
   const [A, id] = docWith(1000), B = cl(A);
   log(S(A, id, 0, 0), 225, 8, 2000); finish(A, id, 3000);
-  const old = cl(A); C.pruneDrafts(old, 3000 + 15 * 864e5);
+  const old = cl(A); C.pruneDrafts(old, 3000 + 61 * 864e5);
   assert.equal(old.drafts[id].pruned, true);
   const m = C.mergeDocs(old, B);
   assert.equal(m.drafts[id].pruned, true);
@@ -340,4 +340,39 @@ test("PROPERTY: two phones, random edits/adds/deletes/finishes with random sync 
       assert.equal(C.canon(s.entries.map((e) => e.sets.map((x) => [x.w, x.reps]))), fromDraft, "session == merged workout");
     }
   }
+});
+
+/* ---------- second review ---------- */
+test("R2-2: History edit made on an OLD app version (no edited flag, no derived) is never reverted", () => {
+  const [A, id] = docWith(1000), B = cl(A);
+  log(S(A, id, 0, 0), 225, 5, 2000); finish(A, id, 3000);
+  const old = cl(A); const so = sessOf(old, id);
+  old.sessions[old.sessions.indexOf(so)] = { id: so.id, routineId: so.routineId, routineName: so.routineName, date: so.date,
+    updatedAt: 9000, entries: [{ exId: "e1", name: "Squat", parts: null, sets: [{ w: 225, reps: [8] }] }] }; // old saveedit shape
+  delete old.drafts;                                   // old app strips drafts when it saves
+  for (const m of [C.mergeDocs(A, old), C.mergeDocs(old, A), C.mergeDocs(C.mergeDocs(old, B), A)]) assert.deepEqual(sessOf(m, id).entries[0].sets[0].reps, [8]);
+  // and a later old-phone edit beats an earlier new-phone edit
+  const nw = cl(A); const sn = sessOf(nw, id); delete sn.derived; sn.edited = true; sn.updatedAt = 8000; sn.entries[0].sets[0].reps = [9];
+  assert.deepEqual(sessOf(C.mergeDocs(nw, old), id).entries[0].sets[0].reps, [8]);
+});
+
+test("R2-4: discard on one phone, then sets typed on the other → workout is open again, nothing lost", () => {
+  const [A, id] = docWith(1000), B = cl(A);
+  C.endDraft(A.drafts[id], "discarded", 2000);
+  log(S(B, id, 0, 0), 200, 15, 2500);
+  const m = C.mergeDocs(A, B);
+  assert.equal(C.currentDraft(m).id, id);
+  assert.equal(S(m, id, 0, 0).w, 200);
+  C.endDraft(m.drafts[id], "discarded", 3000);           // a discard after the typing does stick
+  assert.equal(C.currentDraft(m), null);
+  const F = cl(m); finish(F, id, 3100);                  // and finish still wins over discard
+  assert.equal(sessOf(F, id).entries[0].sets[0].w, 200);
+});
+
+test("R2-5: deleting the only set after Finish empties the derived session", () => {
+  const [A, id] = docWith(1000), B = cl(A);
+  log(S(A, id, 0, 0), 225, 8, 2000); finish(A, id, 3000);
+  const Bm = C.mergeDocs(B, A); C.delSet(S(Bm, id, 0, 0), 4000); C.reconcile(Bm);
+  const m = C.mergeDocs(A, Bm);
+  assert.equal(sessOf(m, id).entries.length, 0);
 });

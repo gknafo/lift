@@ -107,6 +107,16 @@
     for (const id of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) out[id] = mergeDraft((a || {})[id], (b || {})[id]);
     return out;
   }
+  function lastEdit(d) {
+    let t = 0;
+    for (const e of d.entries || []) for (const x of e.sets) t = Math.max(t, setTimes(x), x.dt || 0);
+    return t;
+  }
+  /* A discard only sticks if nothing was typed into the workout after it (e.g. on the other phone);
+     otherwise the workout is open again. Finished is final. */
+  function effState(d) {
+    return d.state === "discarded" && !d.pruned && lastEdit(d) > (d.endedAt || 0) ? "live" : d.state;
+  }
   function draftActivity(d) {
     let t = d.startedAt || 0;
     for (const e of d.entries || []) for (const x of e.sets) t = Math.max(t, setTimes(x), x.dt || 0);
@@ -114,7 +124,7 @@
   }
   function liveDrafts(doc) {
     const has = (d) => (d.entries || []).some((e) => e.sets.some((x) => setTimes(x) > 0)) ? 1 : 0;
-    return Object.values((doc && doc.drafts) || {}).filter((d) => d.state === "live")
+    return Object.values((doc && doc.drafts) || {}).filter((d) => effState(d) === "live")
       .sort((x, y) => has(y) - has(x) || draftActivity(y) - draftActivity(x) || (x.id < y.id ? -1 : 1));
   }
   function currentDraft(doc) { return liveDrafts(doc)[0] || null; }
@@ -129,8 +139,8 @@
   }
   function delSet(x, now) { x.dt = Math.max(now, setTimes(x) + 1); }
   function endDraft(d, state, now) {
-    if ((RANK[state] ?? 0) > (RANK[d.state] ?? 0)) d.state = state;
-    d.endedAt = Math.max(d.endedAt || 0, now);
+    if ((RANK[state] ?? 0) >= (RANK[d.state] ?? 0)) d.state = state;
+    d.endedAt = Math.max(d.endedAt || 0, now, lastEdit(d) + 1);
   }
 
   function draftToSession(d) {
@@ -143,17 +153,18 @@
       if (d.state !== "finished" || d.pruned) continue;
       const i = doc.sessions.findIndex((s) => s.id === d.id);
       const cur = i >= 0 ? doc.sessions[i] : null;
-      if (cur && (cur.edited || cur.deleted)) continue;
+      // only sessions this rebuild made itself are rebuilt; a hand edit or delete (on any app version) is final
+      if (cur && (!cur.derived || cur.deleted)) continue;
       const built = { ...draftToSession(d), derived: true };
-      if (!built.entries.length) continue;
+      if (!built.entries.length && !cur) continue;
       if (i >= 0) doc.sessions[i] = built; else doc.sessions.push(built);
     }
     return doc;
   }
   /* Finished/discarded workouts older than this keep only a stub (their session is already saved). */
-  function pruneDrafts(doc, now, ageMs = 14 * 864e5) {
+  function pruneDrafts(doc, now, ageMs = 60 * 864e5) {
     for (const d of Object.values(doc.drafts || {})) {
-      if (d.state !== "live" && !d.pruned && (d.endedAt || 0) < now - ageMs) { d.pruned = true; d.entries = []; }
+      if (effState(d) !== "live" && !d.pruned && (d.endedAt || 0) < now - ageMs) { d.pruned = true; d.entries = []; }
     }
   }
   /* A workout saved in this browser by the previous app version (localStorage lift.draft.<person>). */
@@ -171,7 +182,7 @@
   }
 
   function mergeSessions(a, b) {
-    const manual = (s) => (s.edited || s.deleted ? 1 : 0);
+    const manual = (s) => (!s.derived || s.deleted ? 1 : 0);
     const map = new Map();
     for (const y of [...(a || []), ...(b || [])]) {
       const x = map.get(y.id);
@@ -339,7 +350,7 @@
     SCHEMA, PROFILES, uid, normName, emptyDoc, seedDoc, mergeDocs, sameDoc, liveRoutines,
     liveSessions, partsOf, nReps, lastFor, totalReps, setFilled, compareSet, newDraft,
     finalizeDraft, mergeDraft, mergeDrafts, liveDrafts, currentDraft, visibleSets, editW, editRep, addSet, delSet,
-    endDraft, reconcile, pruneDrafts, migrateLegacyDraft, draftActivity, canon, fmtW, fmtSet, summarize, parseNum, b64encode, b64decode, validDoc,
+    endDraft, effState, lastEdit, reconcile, pruneDrafts, migrateLegacyDraft, draftActivity, canon, fmtW, fmtSet, summarize, parseNum, b64encode, b64decode, validDoc,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LiftCore = api;
